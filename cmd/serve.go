@@ -2,10 +2,15 @@ package cmd
 
 import (
 	"context"
+	"strconv"
 
+	"github.com/azuki774/khatru-redbean/internal/config"
 	"github.com/azuki774/khatru-redbean/internal/relay"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
+
+var servePort int
 
 // serveCmd represents the serve command
 var serveCmd = &cobra.Command{
@@ -14,7 +19,10 @@ var serveCmd = &cobra.Command{
 	Long:  `start server`,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
-		srv := relay.NewInstance()
+		nip11 := config.NewNIP11InfoForredbean()
+		srv := relay.NewInstance(strconv.Itoa(servePort), nip11)
+
+		zap.S().Infow("start server")
 		srv.Start(ctx)
 	},
 }
@@ -31,4 +39,5 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// serveCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	serveCmd.Flags().IntVarP(&servePort, "port", "p", 9999, "listen port")
 }

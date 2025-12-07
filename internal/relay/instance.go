@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,13 +12,20 @@ import (
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/nip11"
 	"go.uber.org/zap"
 )
 
-type instance struct{}
+type instance struct {
+	Port string
+	Info *nip11.RelayInformationDocument
+}
 
-func NewInstance() *instance {
-	return &instance{}
+func NewInstance(port string, info *nip11.RelayInformationDocument) *instance {
+	return &instance{
+		Port: port,
+		Info: info,
+	}
 }
 
 func (i *instance) Start(ctx context.Context) {
@@ -27,10 +33,7 @@ func (i *instance) Start(ctx context.Context) {
 	relay := khatru.NewRelay()
 
 	// set up some basic properties (will be returned on the NIP-11 endpoint)
-	relay.Info.Name = "my relay"
-	relay.Info.PubKey = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-	relay.Info.Description = "this is my custom relay"
-	relay.Info.Icon = "https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fliquipedia.net%2Fcommons%2Fimages%2F3%2F35%2FSCProbe.jpg&f=1&nofb=1&ipt=0cbbfef25bce41da63d910e86c3c343e6c3b9d63194ca9755351bb7c2efa3359&ipo=images"
+	relay.Info = i.Info
 
 	// you must bring your own storage scheme -- if you want to have any
 	store := make(map[string]*nostr.Event, 120)
@@ -83,7 +86,7 @@ func (i *instance) Start(ctx context.Context) {
 		// define your own policies
 		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
 			if pubkey := khatru.GetAuthed(ctx); pubkey != "" {
-				log.Printf("request from %s\n", pubkey)
+				zap.S().Infow("receive request", "pubkey", pubkey)
 				return false, ""
 			}
 			return true, "auth-required: only authenticated users can read from this relay"
@@ -96,13 +99,14 @@ func (i *instance) Start(ctx context.Context) {
 	mux := relay.Router()
 	// set up other http handlers
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "text/html")
-		fmt.Fprintf(w, `<b>welcome</b> to my relay!`)
+		fmt.Fprintf(w, `OK`)
 	})
+
+	mux.HandleFunc("/.well-known/nostr.json", relay.HandleNIP11)
 
 	// start the server with graceful shutdown
 	server := &http.Server{
-		Addr:    ":9999",
+		Addr:    fmt.Sprintf(":%s", i.Port),
 		Handler: relay,
 	}
 
@@ -113,7 +117,7 @@ func (i *instance) Start(ctx context.Context) {
 	// サーバーをgoroutineで起動
 	serverErr := make(chan error, 1)
 	go func() {
-		zap.S().Infow("running on :9999")
+		zap.S().Infow("waiting for requests", "port", i.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
