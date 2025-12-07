@@ -11,6 +11,9 @@ bin:
 	mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(PKG)
 
+build:
+	docker build -t azuki774/khatru-redbean:dev -f Dockerfile .
+
 clean:
 	rm -rf $(BUILD_DIR)
 	go clean -modcache
