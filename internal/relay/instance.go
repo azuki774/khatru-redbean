@@ -95,10 +95,7 @@ func (i *instance) Start(ctx context.Context) {
 
 	mux := relay.Router()
 	// set up other http handlers
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `OK`)
-	})
-
+	mux.HandleFunc("/", relay.HandleNIP11)
 	mux.HandleFunc("/.well-known/nostr.json", relay.HandleNIP11)
 
 	// start the server with graceful shutdown
