@@ -85,13 +85,10 @@ func (i *instance) Start(ctx context.Context) {
 
 		// define your own policies
 		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
-			if pubkey := khatru.GetAuthed(ctx); pubkey != "" {
-				zap.S().Infow("receive request", "pubkey", pubkey)
-				return false, ""
-			}
-			return true, "auth-required: only authenticated users can read from this relay"
-			// (this will cause an AUTH message to be sent and then a CLOSED message such that clients can
-			//  authenticate and then request again)
+			// TODO: 一旦オールOKにする
+			pubkey := khatru.GetAuthed(ctx)
+			zap.S().Infow("receive request", "pubkey", pubkey)
+			return false, ""
 		},
 	)
 	// check the docs for more goodies!
