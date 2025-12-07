@@ -1,0 +1,35 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/go-postgres
+{
+    "name": "Go & PostgreSQL",
+    "image": "mcr.microsoft.com/devcontainers/base:trixie",
+    "service": "nostar-app",
+    "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+    "features": {
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/go:1": {
+            "version": "1.25.4"
+        },
+        "ghcr.io/itsmechlark/features/postgresql:1": {},
+        "ghcr.io/robbert229/devcontainer-features/postgresql-client:1": {},
+        "ghcr.io/devcontainers-extra/features/pnpm:2": {}
+    },
+    // Features to add to the dev container. More info: https://containers.dev/features.
+    // "features": {},
+    // Configure tool-specific properties.
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    "forwardPorts": [
+        9999
+    ],
+    // Use 'postCreateCommand' to run commands after the container is created.
+    // "postCreateCommand": "go version",
+    // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+    // "remoteUser": "root"
+    "postCreateCommand": "/bin/bash -c './.devcontainer/postCommand.sh'",
+    "mounts": [
+        "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,readonly"
+    ],
+    "remoteEnv": {
+        "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+    }
+}
