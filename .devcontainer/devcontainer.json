@@ -3,7 +3,7 @@
 {
     "name": "Go & PostgreSQL",
     "image": "mcr.microsoft.com/devcontainers/base:trixie",
-    "service": "nostar-app",
+    "service": "redbean-app",
     "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
     "features": {
         "ghcr.io/devcontainers/features/github-cli:1": {},
