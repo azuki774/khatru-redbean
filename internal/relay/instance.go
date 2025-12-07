@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/nbd-wtf/go-nostr"
+	"go.uber.org/zap"
 )
 
 type instance struct{}
@@ -95,7 +100,40 @@ func (i *instance) Start(ctx context.Context) {
 		fmt.Fprintf(w, `<b>welcome</b> to my relay!`)
 	})
 
-	// start the server
-	fmt.Println("running on :9999")
-	http.ListenAndServe(":9999", relay)
+	// start the server with graceful shutdown
+	server := &http.Server{
+		Addr:    ":9999",
+		Handler: relay,
+	}
+
+	// シグナルハンドリング用のcontextを作成
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// サーバーをgoroutineで起動
+	serverErr := make(chan error, 1)
+	go func() {
+		zap.S().Infow("running on :9999")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	// シグナルまたはエラーを待機
+	select {
+	case <-sigCtx.Done():
+		zap.S().Info("shutting down gracefully...")
+		// graceful shutdown用のcontextを作成（30秒のタイムアウト）
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// graceful shutdownを実行
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			zap.S().Errorw("server forced to shutdown", "error", err)
+		} else {
+			zap.S().Info("server exited gracefully")
+		}
+	case err := <-serverErr:
+		zap.S().Errorw("server error", "error", err)
+	}
 }
