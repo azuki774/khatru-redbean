@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fiatjaf/eventstore/postgresql"
 	"github.com/fiatjaf/khatru"
 	"github.com/fiatjaf/khatru/policies"
 	"github.com/nbd-wtf/go-nostr"
@@ -17,54 +18,36 @@ import (
 )
 
 type instance struct {
-	Port string
-	Info *nip11.RelayInformationDocument
+	Port        string
+	DatabaseURL string
+	Info        *nip11.RelayInformationDocument
 }
 
 func NewInstance(port string, info *nip11.RelayInformationDocument) *instance {
 	return &instance{
-		Port: port,
-		Info: info,
+		Port:        port,
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		Info:        info,
 	}
 }
 
-func (i *instance) Start(ctx context.Context) {
+func (i *instance) Start(ctx context.Context) error {
 	// create the relay instance
 	relay := khatru.NewRelay()
 
 	// set up some basic properties (will be returned on the NIP-11 endpoint)
 	relay.Info = i.Info
 
-	// you must bring your own storage scheme -- if you want to have any
-	store := make(map[string]*nostr.Event, 120)
+	// set up relay functions
 
-	// set up the basic relay functions
-	relay.StoreEvent = append(relay.StoreEvent,
-		func(ctx context.Context, event *nostr.Event) error {
-			store[event.ID] = event
-			return nil
-		},
-	)
-	relay.QueryEvents = append(relay.QueryEvents,
-		func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
-			ch := make(chan *nostr.Event)
-			go func() {
-				for _, evt := range store {
-					if filter.Matches(evt) {
-						ch <- evt
-					}
-				}
-				close(ch)
-			}()
-			return ch, nil
-		},
-	)
-	relay.DeleteEvent = append(relay.DeleteEvent,
-		func(ctx context.Context, event *nostr.Event) error {
-			delete(store, event.ID)
-			return nil
-		},
-	)
+	// A. インメモリの場合の実装
+	// SetInmemoryRelay(relay)
+
+	// B. postgres を利用するときの実装
+	if err := SetPostgresRelay(relay, i.DatabaseURL); err != nil {
+		zap.S().Errorw("failed to set postgres", "err", err)
+		return err
+	}
 
 	// there are many other configurable things you can set
 	relay.RejectEvent = append(relay.RejectEvent,
@@ -85,10 +68,7 @@ func (i *instance) Start(ctx context.Context) {
 
 		// define your own policies
 		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
-			// TODO: 一旦オールOKにする
-			pubkey := khatru.GetAuthed(ctx)
-			zap.S().Infow("receive request", "pubkey", pubkey)
-			return false, ""
+			return false, "" // anyone else can
 		},
 	)
 	// check the docs for more goodies!
@@ -134,4 +114,64 @@ func (i *instance) Start(ctx context.Context) {
 	case err := <-serverErr:
 		zap.S().Errorw("server error", "error", err)
 	}
+
+	return nil
+}
+
+// インメモリでリレー情報を管理するときのセット関数（テスト用）
+func SetInmemoryRelay(relay *khatru.Relay) {
+	// you must bring your own storage scheme -- if you want to have any
+	store := make(map[string]*nostr.Event, 120)
+
+	// set up the basic relay functions
+	relay.StoreEvent = append(relay.StoreEvent,
+		func(ctx context.Context, event *nostr.Event) error {
+			store[event.ID] = event
+			return nil
+		},
+	)
+	relay.QueryEvents = append(relay.QueryEvents,
+		func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
+			ch := make(chan *nostr.Event)
+			go func() {
+				for _, evt := range store {
+					if filter.Matches(evt) {
+						ch <- evt
+					}
+				}
+				close(ch)
+			}()
+			return ch, nil
+		},
+	)
+	relay.DeleteEvent = append(relay.DeleteEvent,
+		func(ctx context.Context, event *nostr.Event) error {
+			delete(store, event.ID)
+			return nil
+		},
+	)
+}
+
+// postgres でリレー情報を管理するときのセット関数
+func SetPostgresRelay(relay *khatru.Relay, databaseUrl string) error {
+	// DB接続 (eventstore)
+	zap.S().Infow("database initializing...")
+
+	if databaseUrl == "" { // DATABASE_URL が空だとエラーにならないので、別途対応
+		return fmt.Errorf("DATABASE_URL is nil")
+	}
+
+	db := postgresql.PostgresBackend{DatabaseURL: databaseUrl}
+	if err := db.Init(); err != nil {
+		return err
+	}
+	zap.S().Infow("database ready")
+
+	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
+	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
+	relay.CountEvents = append(relay.CountEvents, db.CountEvents)
+	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
+	relay.ReplaceEvent = append(relay.ReplaceEvent, db.ReplaceEvent)
+
+	return nil
 }

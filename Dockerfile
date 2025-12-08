@@ -18,6 +18,6 @@ EXPOSE 9999
 COPY --from=builder --chmod=555 /bin/khatru-redbean /khatru-redbean
 USER nonroot:nonroot
 
-# ENV DATABASE_URL=postgres://postgres:postgres@localhost:5432/khatru-redbean
+# ENV DATABASE_URL=postgres://user:pass@localhost:5432/redbean
 
 ENTRYPOINT ["/khatru-redbean", "serve"]
