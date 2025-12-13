@@ -3,7 +3,7 @@ package config
 import "github.com/nbd-wtf/go-nostr/nip11"
 
 // khatru-redbean 向けのコンフィグを設定
-func NewNIP11InfoForredbean(description, pubkey, contract string) *nip11.RelayInformationDocument {
+func NewNIP11InfoForredbean(description, pubkey, contact string) *nip11.RelayInformationDocument {
 	var nip11 nip11.RelayInformationDocument
 	nip11.Name = "redbean"
 	if description != "" {
@@ -12,7 +12,7 @@ func NewNIP11InfoForredbean(description, pubkey, contract string) *nip11.RelayIn
 		nip11.Description = "khatru server customized by redbean"
 	}
 	nip11.PubKey = pubkey
-	nip11.Contact = contract
+	nip11.Contact = contact
 	nip11.SupportedNIPs = []any{1, 11, 40, 42, 70, 86}
 	nip11.Software = "https://github.com/azuki774/khatru-redbean"
 	nip11.Version = Version

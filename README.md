@@ -59,7 +59,7 @@ make clean
 | `COUNTRY_ONLY` | ❌ | 特定の国からのアクセスのみを許可する（Cloudflareのカントリーコード） | `JP` |
 | `DESCRIPTION` | ❌ | リレーの説明（NIP-11で表示） | `My Nostr Relay` |
 | `PUBKEY` | ❌ | リレー管理者の公開鍵（NIP-11で表示） | `npub1...` |
-| `CONTRACT` | ❌ | リレー管理者への連絡先（NIP-11で表示） | `admin@example.com` |
+| `CONTACT` | ❌ | リレー管理者への連絡先（NIP-11で表示） | `admin@example.com` |
 
 ### 環境変数の設定例
 
@@ -68,7 +68,7 @@ export DATABASE_URL="postgres://user:password@localhost:5432/nostr?sslmode=disab
 export COUNTRY_ONLY="JP"
 export DESCRIPTION="My Nostr Relay"
 export PUBKEY="npub1..."
-export CONTRACT="admin@example.com"
+export CONTACT="admin@example.com"
 ```
 
 ## 使い方
