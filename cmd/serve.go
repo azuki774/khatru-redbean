@@ -19,7 +19,11 @@ var serveCmd = &cobra.Command{
 	Long:  `start server`,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
-		nip11 := config.NewNIP11InfoForredbean()
+		nip11 := config.NewNIP11InfoForredbean(
+			os.Getenv("DESCRIPTION"),
+			os.Getenv("PUBKEY"),
+			os.Getenv("CONTRACT"),
+		)
 		srv := relay.NewInstance(servePort, os.Getenv("DATABASE_URL"), os.Getenv("COUNTRY_ONLY"), nip11)
 
 		zap.S().Infow("start server", "country_only", srv.CountryOnly)
