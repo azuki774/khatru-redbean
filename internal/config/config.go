@@ -15,7 +15,7 @@ func NewNIP11InfoForredbean(description, pubkey, contract string) *nip11.RelayIn
 	nip11.Contact = contract
 	nip11.SupportedNIPs = []any{1, 11, 40, 42, 70, 86}
 	nip11.Software = "https://github.com/azuki774/khatru-redbean"
-	// Version       string `json:"version"`
+	nip11.Version = Version
 	// Limitation     *RelayLimitationDocument  `json:"limitation,omitempty"`
 	nip11.RelayCountries = []string{"JP"}
 	nip11.LanguageTags = []string{"ja"}
