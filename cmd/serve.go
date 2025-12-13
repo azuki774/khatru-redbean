@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"context"
-	"strconv"
+	"os"
 
 	"github.com/azuki774/khatru-redbean/internal/config"
 	"github.com/azuki774/khatru-redbean/internal/relay"
@@ -20,7 +20,7 @@ var serveCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
 		nip11 := config.NewNIP11InfoForredbean()
-		srv := relay.NewInstance(strconv.Itoa(servePort), nip11)
+		srv := relay.NewInstance(servePort, os.Getenv("DATABASE_URL"), nip11)
 
 		zap.S().Infow("start server")
 		srv.Start(ctx)
