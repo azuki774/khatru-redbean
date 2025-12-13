@@ -18,15 +18,15 @@ import (
 )
 
 type instance struct {
-	Port        string
+	Port        int
 	DatabaseURL string
 	Info        *nip11.RelayInformationDocument
 }
 
-func NewInstance(port string, info *nip11.RelayInformationDocument) *instance {
+func NewInstance(port int, databaseUrl string, info *nip11.RelayInformationDocument) *instance {
 	return &instance{
 		Port:        port,
-		DatabaseURL: os.Getenv("DATABASE_URL"),
+		DatabaseURL: databaseUrl,
 		Info:        info,
 	}
 }
@@ -55,6 +55,7 @@ func (i *instance) Start(ctx context.Context) error {
 		policies.ValidateKind,
 
 		// define your own policies
+		// TODO: NIP-13 (Proof of Work)
 		policies.PreventLargeTags(100),
 		func(ctx context.Context, event *nostr.Event) (reject bool, msg string) {
 			return false, "" // anyone else can
@@ -80,7 +81,7 @@ func (i *instance) Start(ctx context.Context) error {
 
 	// start the server with graceful shutdown
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%s", i.Port),
+		Addr:    fmt.Sprintf(":%d", i.Port),
 		Handler: relay,
 	}
 
