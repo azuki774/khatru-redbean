@@ -7,9 +7,9 @@ RUN --mount=type=bind,source=.,target=/workspace \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build -a -tags netgo \
     -ldflags "-extldflags '-static' -s -w \
-    -X main.version=$(git describe --tag --abbrev=0 2>/dev/null || echo 'dev') \
-    -X main.revision=$(git rev-list -1 HEAD 2>/dev/null || echo 'unknown') \
-    -X main.build=$(git describe --tags 2>/dev/null || echo 'dev')" \
+    -X github.com/azuki774/khatru-redbean/internal/config.Version=$(git describe --tag --abbrev=0 2>/dev/null || echo 'dev') \
+    -X github.com/azuki774/khatru-redbean/internal/config.Revision=$(git rev-list -1 HEAD 2>/dev/null || echo 'unknown') \
+    -X github.com/azuki774/khatru-redbean/internal/config.Build=$(git describe --tags 2>/dev/null || echo 'dev')" \
     -o /bin/khatru-redbean ./
 
 FROM gcr.io/distroless/static-debian12:nonroot

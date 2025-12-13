@@ -3,7 +3,13 @@ BUILD_DIR ?= bin
 PKG ?= ./
 GOOS ?= linux
 GOARCH ?= amd64
-LDFLAGS ?= -s -w -extldflags '-static'
+VERSION ?= $(shell git describe --tag --abbrev=0 2>/dev/null || echo 'dev')
+REVISION ?= $(shell git rev-list -1 HEAD 2>/dev/null || echo 'unknown')
+BUILD ?= $(shell git describe --tags 2>/dev/null || echo 'dev')
+LDFLAGS ?= -s -w -extldflags '-static' \
+	-X 'github.com/azuki774/khatru-redbean/internal/config.Version=$(VERSION)' \
+	-X 'github.com/azuki774/khatru-redbean/internal/config.Revision=$(REVISION)' \
+	-X 'github.com/azuki774/khatru-redbean/internal/config.Build=$(BUILD)'
 
 .PHONY: bin build clean tidy fmt test staticcheck check setup
 
