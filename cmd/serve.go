@@ -22,7 +22,7 @@ var serveCmd = &cobra.Command{
 		nip11 := config.NewNIP11InfoForredbean()
 		srv := relay.NewInstance(servePort, os.Getenv("DATABASE_URL"), os.Getenv("COUNTRY_ONLY"), nip11)
 
-		zap.S().Infow("start server")
+		zap.S().Infow("start server", "country_only", srv.CountryOnly)
 		srv.Start(ctx)
 	},
 }
