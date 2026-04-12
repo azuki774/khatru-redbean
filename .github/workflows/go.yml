@@ -9,6 +9,12 @@ on:
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch:
+          - amd64
+          - arm64
 
     steps:
       - name: Checkout code
@@ -28,4 +34,4 @@ jobs:
         run: make check
 
       - name: Build binary
-        run: make bin
+        run: make bin GOARCH=${{ matrix.goarch }}
