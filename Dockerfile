@@ -1,11 +1,14 @@
-FROM golang:1.25.4 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.4 AS builder
 
 WORKDIR /workspace
+
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN --mount=type=bind,source=.,target=/workspace \
     --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -a -tags netgo \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -tags netgo \
     -ldflags "-extldflags '-static' -s -w \
     -X github.com/azuki774/khatru-redbean/internal/config.Version=$(git describe --tag --abbrev=0 2>/dev/null || echo 'dev') \
     -X github.com/azuki774/khatru-redbean/internal/config.Revision=$(git rev-list -1 HEAD 2>/dev/null || echo 'unknown') \

@@ -21,11 +21,19 @@ make bin
 
 バイナリは `bin/khatru-redbean` に生成されます。
 
+`arm64` 向けにビルドする場合は以下を実行してください。
+
+```bash
+make bin GOARCH=arm64
+```
+
 ### Dockerイメージのビルド
 
 ```bash
 make build
 ```
+
+GitHub Actions では、同じタグ名で `linux/amd64` と `linux/arm64` のマルチアーキテクチャイメージを GHCR に公開します。
 
 ### その他の開発用コマンド
 
