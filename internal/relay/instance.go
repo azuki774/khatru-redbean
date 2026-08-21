@@ -36,6 +36,10 @@ func NewInstance(port int, databaseUrl string, countryOnly string, info *nip11.R
 func (i *instance) Start(ctx context.Context) error {
 	// create the relay instance
 	relay := khatru.NewRelay()
+	telemetry, err := newRelayTelemetry()
+	if err != nil {
+		return err
+	}
 
 	// set up some basic properties (will be returned on the NIP-11 endpoint)
 	relay.Info = i.Info
@@ -46,7 +50,7 @@ func (i *instance) Start(ctx context.Context) error {
 	// SetInmemoryRelay(relay)
 
 	// B. postgres を利用するときの実装
-	if err := SetPostgresRelay(relay, i.DatabaseURL); err != nil {
+	if err := setPostgresRelay(relay, i.DatabaseURL, telemetry); err != nil {
 		zap.S().Errorw("failed to set postgres", "err", err)
 		return err
 	}
@@ -54,23 +58,23 @@ func (i *instance) Start(ctx context.Context) error {
 	// there are many other configurable things you can set
 	relay.RejectEvent = append(relay.RejectEvent,
 		// built-in policies
-		policies.ValidateKind,
+		telemetry.eventPolicy("validate_kind", policies.ValidateKind),
 
 		// define your own policies
 		// TODO: NIP-13 (Proof of Work)
-		policies.PreventLargeTags(100),
-		i.RestrictCountry, // 特定の国のみにフィルタリングする
+		telemetry.eventPolicy("prevent_large_tags", policies.PreventLargeTags(100)),
+		telemetry.eventPolicy("restrict_country", i.RestrictCountry), // 特定の国のみにフィルタリングする
 	)
 
 	// you can request auth by rejecting an event or a request with the prefix "auth-required: "
 	relay.RejectFilter = append(relay.RejectFilter,
 		// built-in policies
-		policies.NoComplexFilters,
+		telemetry.filterPolicy("no_complex_filters", policies.NoComplexFilters),
 
 		// define your own policies
-		func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
+		telemetry.filterPolicy("allow_all", func(ctx context.Context, filter nostr.Filter) (reject bool, msg string) {
 			return false, "" // anyone else can
-		},
+		}),
 	)
 	// check the docs for more goodies!
 
@@ -155,6 +159,15 @@ func SetInmemoryRelay(relay *khatru.Relay) {
 
 // postgres でリレー情報を管理するときのセット関数
 func SetPostgresRelay(relay *khatru.Relay, databaseUrl string) error {
+	telemetry, err := newRelayTelemetry()
+	if err != nil {
+		return err
+	}
+
+	return setPostgresRelay(relay, databaseUrl, telemetry)
+}
+
+func setPostgresRelay(relay *khatru.Relay, databaseUrl string, telemetry *relayTelemetry) error {
 	// DB接続 (eventstore)
 	zap.S().Infow("database initializing...")
 
@@ -168,11 +181,11 @@ func SetPostgresRelay(relay *khatru.Relay, databaseUrl string) error {
 	}
 	zap.S().Infow("database ready")
 
-	relay.StoreEvent = append(relay.StoreEvent, db.SaveEvent)
-	relay.QueryEvents = append(relay.QueryEvents, db.QueryEvents)
-	relay.CountEvents = append(relay.CountEvents, db.CountEvents)
-	relay.DeleteEvent = append(relay.DeleteEvent, db.DeleteEvent)
-	relay.ReplaceEvent = append(relay.ReplaceEvent, db.ReplaceEvent)
+	relay.StoreEvent = append(relay.StoreEvent, telemetry.eventOperation("save_event", db.SaveEvent))
+	relay.QueryEvents = append(relay.QueryEvents, telemetry.queryOperation(db.QueryEvents))
+	relay.CountEvents = append(relay.CountEvents, telemetry.countOperation(db.CountEvents))
+	relay.DeleteEvent = append(relay.DeleteEvent, telemetry.eventOperation("delete_event", db.DeleteEvent))
+	relay.ReplaceEvent = append(relay.ReplaceEvent, telemetry.eventOperation("replace_event", db.ReplaceEvent))
 
 	return nil
 }
