@@ -68,11 +68,11 @@ make clean
 | `DESCRIPTION` | ❌ | リレーの説明（NIP-11で表示） | `My Nostr Relay` |
 | `PUBKEY` | ❌ | リレー管理者の公開鍵（NIP-11で表示） | `npub1...` |
 | `CONTACT` | ❌ | リレー管理者への連絡先（NIP-11で表示） | `admin@example.com` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | ❌ | OpenTelemetry の OTLP/gRPC endpoint | `alloy.observability.svc:4317` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | ❌ | OpenTelemetry の OTLP/HTTP endpoint | `10.254.0.10:4318` |
 
-`OTEL_EXPORTER_OTLP_ENDPOINT` を設定しない場合、Telemetry は `10.254.0.10:4317` へ送信されます。通信には TLS を使用しません。
+`OTEL_EXPORTER_OTLP_ENDPOINT` を設定しない場合、Telemetry は `10.254.0.10:4318` へ OTLP/HTTP で送信されます。通信には TLS を使用しません。
 
-OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span として送信します。DB 操作数とレイテンシー、ポリシーの許可・拒否数も Metrics として送信します。イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
+OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span として送信します。Metrics は送信しません。イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
 
 ### 環境変数の設定例
 
