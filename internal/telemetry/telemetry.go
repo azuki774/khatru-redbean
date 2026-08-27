@@ -2,11 +2,14 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 )
@@ -23,6 +26,7 @@ func endpoint() string {
 
 type Provider struct {
 	TracerProvider *trace.TracerProvider
+	MeterProvider  *metric.MeterProvider
 }
 
 func NewProvider(ctx context.Context, version string) (*Provider, error) {
@@ -33,6 +37,14 @@ func newProvider(ctx context.Context, endpoint, version string) (*Provider, erro
 	traceExporter, err := otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpoint(endpoint),
 		otlptracehttp.WithInsecure(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	metricExporter, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithEndpoint(endpoint),
+		otlpmetrichttp.WithInsecure(),
 	)
 	if err != nil {
 		return nil, err
@@ -49,13 +61,22 @@ func newProvider(ctx context.Context, endpoint, version string) (*Provider, erro
 			trace.WithResource(res),
 			trace.WithSampler(trace.AlwaysSample()),
 		),
+		MeterProvider: metric.NewMeterProvider(
+			metric.WithReader(metric.NewPeriodicReader(metricExporter)),
+			metric.WithResource(res),
+		),
 	}, nil
 }
 
 func (p *Provider) RegisterGlobal() {
 	otel.SetTracerProvider(p.TracerProvider)
+	otel.SetMeterProvider(p.MeterProvider)
 }
 
 func (p *Provider) Shutdown(ctx context.Context) error {
-	return p.TracerProvider.Shutdown(ctx)
+	err := p.TracerProvider.Shutdown(ctx)
+	if mErr := p.MeterProvider.Shutdown(ctx); mErr != nil {
+		return errors.Join(err, mErr)
+	}
+	return err
 }

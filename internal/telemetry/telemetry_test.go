@@ -61,3 +61,42 @@ func TestNewProvider(t *testing.T) {
 		t.Error("trace was not exported")
 	}
 }
+
+func TestNewProviderExportsMetrics(t *testing.T) {
+	metricExported := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/metrics" {
+			select {
+			case metricExported <- struct{}{}:
+			default:
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := newProvider(context.Background(), strings.TrimPrefix(server.URL, "http://"), "test")
+	if err != nil {
+		t.Fatalf("newProvider() error = %v", err)
+	}
+	if provider.MeterProvider == nil {
+		t.Fatal("newProvider() MeterProvider is nil")
+	}
+
+	meter := provider.MeterProvider.Meter("test")
+	counter, err := meter.Int64Counter("test.counter")
+	if err != nil {
+		t.Fatalf("Int64Counter() error = %v", err)
+	}
+	counter.Add(context.Background(), 1)
+
+	if err := provider.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	select {
+	case <-metricExported:
+	case <-time.After(time.Second):
+		t.Error("metric was not exported")
+	}
+}
