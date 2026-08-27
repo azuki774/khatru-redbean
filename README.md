@@ -72,7 +72,19 @@ make clean
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` を設定しない場合、Telemetry は `10.254.0.10:4318` へ OTLP/HTTP で送信されます。通信には TLS を使用しません。
 
-OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span および Metrics として送信します。Metrics には DB 操作の回数・所要時間ヒストグラム（`db.client.operation.duration`）とポリシー判定回数（`nostr.relay.policy.decisions`）が含まれます。イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
+OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span および Metrics として送信します。また、HTTP/WebSocket のリクエストごとに `http.request` Span を送信し、接続ライフサイクルと Go ランタイムの Metrics も送信します。
+
+Metrics には以下が含まれます。
+
+- DB 操作の回数・所要時間ヒストグラム: `db.client.operation.duration`、`nostr.relay.db.operations`
+- ポリシー判定回数: `nostr.relay.policy.decisions`
+- 接続数（アクティブ接続のゲージ）: `nostr.relay.connections`
+- 接続/切断の発生回数: `nostr.relay.connection.count`（属性 `nostr.connection.state` = `open` / `close`）
+- 接続時間のヒストグラム: `nostr.relay.connection.duration`
+- 拒否された接続の回数: `nostr.relay.connection.rejected`
+- Go ランタイム（GC 回数・ヒープ・goroutine 数など）: `runtime.*`、`process.*`
+
+イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
 
 ### 環境変数の設定例
 
