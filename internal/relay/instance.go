@@ -46,6 +46,11 @@ func (i *instance) Start(ctx context.Context) error {
 
 	// set up relay functions
 
+	// 接続ライフサイクルの計測をフックする
+	relay.OnConnect = append(relay.OnConnect, telemetry.onConnect)
+	relay.OnDisconnect = append(relay.OnDisconnect, telemetry.onDisconnect)
+	relay.RejectConnection = append(relay.RejectConnection, telemetry.rejectConnection)
+
 	// A. インメモリの場合の実装
 	// SetInmemoryRelay(relay)
 
@@ -86,7 +91,7 @@ func (i *instance) Start(ctx context.Context) error {
 	// start the server with graceful shutdown
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", i.Port),
-		Handler: relay,
+		Handler: telemetry.httpMiddleware(relay),
 	}
 
 	// シグナルハンドリング用のcontextを作成

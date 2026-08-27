@@ -3,11 +3,15 @@ package relay
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -113,4 +117,119 @@ func testRelayTelemetry(t *testing.T) (*relayTelemetry, *tracetest.SpanRecorder)
 		t.Fatalf("newRelayTelemetry() error = %v", err)
 	}
 	return telemetry, recorder
+}
+
+func TestHTTPMiddlewareRecordsSpan(t *testing.T) {
+	telemetry, recorder := testRelayTelemetry(t)
+
+	handler := telemetry.httpMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	if spans[0].Name() != "http.request" {
+		t.Errorf("span name = %q, want http.request", spans[0].Name())
+	}
+	var gotStatus int64
+	for _, a := range spans[0].Attributes() {
+		if a.Key == "http.response.status_code" {
+			gotStatus = a.Value.AsInt64()
+		}
+	}
+	if gotStatus != http.StatusTeapot {
+		t.Errorf("status code attribute = %d, want 418", gotStatus)
+	}
+}
+
+func TestConnectionMetrics(t *testing.T) {
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+	previous := otel.GetMeterProvider()
+	otel.SetMeterProvider(provider)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(previous)
+		provider.Shutdown(context.Background())
+	})
+
+	telemetry, err := newRelayTelemetry()
+	if err != nil {
+		t.Fatalf("newRelayTelemetry() error = %v", err)
+	}
+
+	ctx := context.Background()
+	telemetry.onConnect(ctx)
+	telemetry.onDisconnect(ctx)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	connections, ok := sumInt64(rm, "nostr.relay.connections")
+	if !ok {
+		t.Fatal("nostr.relay.connections not exported")
+	}
+	if connections != 0 {
+		t.Errorf("nostr.relay.connections = %d, want 0 (connect/disconnect cancel out)", connections)
+	}
+
+	count, ok := sumInt64(rm, "nostr.relay.connection.count")
+	if !ok {
+		t.Fatal("nostr.relay.connection.count not exported")
+	}
+	if count != 2 {
+		t.Errorf("nostr.relay.connection.count = %d, want 2 (open + close)", count)
+	}
+
+	if _, ok := histogramCount(rm, "nostr.relay.connection.duration"); !ok {
+		t.Error("nostr.relay.connection.duration not exported")
+	}
+}
+
+func sumInt64(rm metricdata.ResourceMetrics, name string) (int64, bool) {
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			if data, ok := m.Data.(metricdata.Sum[int64]); ok {
+				var total int64
+				for _, dp := range data.DataPoints {
+					total += dp.Value
+				}
+				return total, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func histogramCount(rm metricdata.ResourceMetrics, name string) (uint64, bool) {
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			if data, ok := m.Data.(metricdata.Histogram[int64]); ok {
+				var total uint64
+				for _, dp := range data.DataPoints {
+					total += dp.Count
+				}
+				return total, true
+			}
+			if data, ok := m.Data.(metricdata.Histogram[float64]); ok {
+				var total uint64
+				for _, dp := range data.DataPoints {
+					total += dp.Count
+				}
+				return total, true
+			}
+		}
+	}
+	return 0, false
 }

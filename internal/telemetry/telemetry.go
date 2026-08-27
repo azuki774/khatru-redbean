@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 
+	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -15,6 +17,8 @@ import (
 )
 
 const defaultEndpoint = "10.254.0.10:4318"
+
+var runtimeMetricsStarted sync.Once
 
 func endpoint() string {
 	if value := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); value != "" {
@@ -71,6 +75,10 @@ func newProvider(ctx context.Context, endpoint, version string) (*Provider, erro
 func (p *Provider) RegisterGlobal() {
 	otel.SetTracerProvider(p.TracerProvider)
 	otel.SetMeterProvider(p.MeterProvider)
+
+	runtimeMetricsStarted.Do(func() {
+		_ = runtime.Start(runtime.WithMeterProvider(p.MeterProvider))
+	})
 }
 
 func (p *Provider) Shutdown(ctx context.Context) error {
