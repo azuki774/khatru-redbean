@@ -72,7 +72,7 @@ make clean
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` を設定しない場合、Telemetry は `10.254.0.10:4318` へ OTLP/HTTP で送信されます。通信には TLS を使用しません。
 
-OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span として送信します。Metrics は送信しません。イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
+OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span および Metrics として送信します。Metrics には DB 操作の回数・所要時間ヒストグラム（`db.client.operation.duration`）とポリシー判定回数（`nostr.relay.policy.decisions`）が含まれます。イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
 
 ### 環境変数の設定例
 
