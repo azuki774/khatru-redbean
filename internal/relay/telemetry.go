@@ -271,6 +271,10 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func eventAttributes(event *nostr.Event) []attribute.KeyValue {
 	if event == nil {
 		return nil

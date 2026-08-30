@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/nbd-wtf/go-nostr"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -144,6 +146,31 @@ func TestHTTPMiddlewareRecordsSpan(t *testing.T) {
 	if gotStatus != http.StatusTeapot {
 		t.Errorf("status code attribute = %d, want 418", gotStatus)
 	}
+}
+
+func TestHTTPMiddlewareSupportsWebSocketUpgrade(t *testing.T) {
+	telemetry, _ := testRelayTelemetry(t)
+
+	handler := telemetry.httpMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket.Accept() error = %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket.Dial() error = %v", err)
+	}
+	conn.Close(websocket.StatusNormalClosure, "")
 }
 
 func TestConnectionMetrics(t *testing.T) {

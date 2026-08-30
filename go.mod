@@ -3,6 +3,7 @@ module github.com/azuki774/khatru-redbean
 go 1.25.4
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/fiatjaf/eventstore v0.16.2
 	github.com/fiatjaf/khatru v0.19.1
 	github.com/nbd-wtf/go-nostr v0.52.3
@@ -30,7 +31,6 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
-	github.com/coder/websocket v1.8.13 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
