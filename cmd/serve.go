@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/azuki774/khatru-redbean/internal/config"
 	"github.com/azuki774/khatru-redbean/internal/relay"
+	"github.com/azuki774/khatru-redbean/internal/telemetry"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -19,6 +21,19 @@ var serveCmd = &cobra.Command{
 	Long:  `start server`,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
+		provider, err := telemetry.NewProvider(ctx, config.Version)
+		if err != nil {
+			zap.S().Errorw("failed to initialize telemetry", "error", err)
+		} else {
+			provider.RegisterGlobal()
+			defer func() {
+				c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := provider.Shutdown(c); err != nil {
+					zap.S().Errorw("failed to shutdown telemetry", "error", err)
+				}
+			}()
+		}
 		nip11 := config.NewNIP11InfoForredbean(
 			os.Getenv("DESCRIPTION"),
 			os.Getenv("PUBKEY"),
