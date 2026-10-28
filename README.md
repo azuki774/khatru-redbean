@@ -37,6 +37,8 @@ make build
 
 GitHub Actions では、同じタグ名で `linux/amd64` と `linux/arm64` のマルチアーキテクチャイメージを GHCR に公開します。
 
+実行用イメージは `gcr.io/distroless/static-debian13:nonroot` を使用し、非 root ユーザーで起動します。
+
 ### その他の開発用コマンド
 
 ```bash
