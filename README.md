@@ -160,14 +160,3 @@ export COUNTRY_ONLY="JP"
 ## シャットダウン
 
 サーバーは `Ctrl+C` または `SIGTERM` シグナルでグレースフルシャットダウンします。
-
-## Renovate
-
-依存関係の更新方針は [`renovate.jsonc`](renovate.jsonc) で管理します。
-
-- 通常の更新は毎週金曜日の 20:00〜20:59（`Asia/Tokyo`、JST）を処理時間帯とします。20:00 ちょうどの実行を保証するものではありません。
-- 通常の更新 PR は同時に最大 7 件とし、時間あたりの作成件数制限は設けません。
-- GitHub の脆弱性アラートに基づくセキュリティ更新 PR は、上記の時間帯と同時 7 件の制限を迂回して即時作成の対象になります。検知・実行には Renovate の稼働が必要です。
-- GitHub Actions は commit SHA（SHA-1）に固定し、Actions の更新だけを自動マージの対象にします。他の依存関係は自動マージしません。
-
-セキュリティ更新には、GitHub の dependency graph と Dependabot alerts の有効化、および対象リポジトリへの Renovate のアクセス・脆弱性アラート読み取り・PR 作成権限が必要です。
