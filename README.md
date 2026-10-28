@@ -8,8 +8,10 @@ khatru-redbeanは、[khatru](https://github.com/fiatjaf/khatru)をベースに�
 
 ## 必要な環境
 
-- Go 1.21以上
+- Go 1.27.3以上（CI・Docker・開発コンテナは Go 1.27.3 を使用）
 - PostgreSQL データベース
+
+eventstore は既存 PostgreSQL データとの互換性のため v0.17.5 を使用しています。[v0.17.6 以降のタグ保存形式変更](https://github.com/fiatjaf/eventstore/commit/359b43d6010b4060808de4720524db5756370b91)には、既存イベントの `tagvalues` の再計算が必要です。今後の更新では DB 移行を併せて実施してください。
 
 ## ビルド
 
@@ -34,6 +36,8 @@ make build
 ```
 
 GitHub Actions では、同じタグ名で `linux/amd64` と `linux/arm64` のマルチアーキテクチャイメージを GHCR に公開します。
+
+実行用イメージは `gcr.io/distroless/static-debian13:nonroot` を使用し、非 root ユーザーで起動します。
 
 ### その他の開発用コマンド
 

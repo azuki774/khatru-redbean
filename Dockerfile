@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.25.4 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3 AS builder
 
 WORKDIR /workspace
 
@@ -15,7 +15,7 @@ RUN --mount=type=bind,source=.,target=/workspace \
     -X github.com/azuki774/khatru-redbean/internal/config.Build=$(git describe --tags 2>/dev/null || echo 'dev')" \
     -o /bin/khatru-redbean ./
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 EXPOSE 9999
 
 COPY --from=builder --chmod=555 /bin/khatru-redbean /khatru-redbean
