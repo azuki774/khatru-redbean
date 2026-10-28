@@ -19,8 +19,8 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "start server",
 	Long:  `start server`,
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 		provider, err := telemetry.NewProvider(ctx, config.Version)
 		if err != nil {
 			zap.S().Errorw("failed to initialize telemetry", "error", err)
@@ -42,7 +42,7 @@ var serveCmd = &cobra.Command{
 		srv := relay.NewInstance(servePort, os.Getenv("DATABASE_URL"), os.Getenv("COUNTRY_ONLY"), nip11)
 
 		zap.S().Infow("start server", "country_only", srv.CountryOnly)
-		srv.Start(ctx)
+		return srv.Start(ctx)
 	},
 }
 
