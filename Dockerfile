@@ -19,6 +19,7 @@ FROM gcr.io/distroless/static-debian13:nonroot
 EXPOSE 9999
 
 COPY --from=builder --chmod=555 /bin/khatru-redbean /khatru-redbean
+COPY --chmod=444 LICENSE THIRD_PARTY_NOTICES /usr/share/licenses/khatru-redbean/
 USER nonroot:nonroot
 
 # ENV DATABASE_URL=postgres://user:pass@localhost:5432/redbean
