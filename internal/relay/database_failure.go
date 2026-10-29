@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/postgresql"
+	"github.com/azuki774/khatru-redbean/internal/storage"
+	"github.com/azuki774/khatru-redbean/internal/storage/postgres"
 )
 
 type databaseFailure struct {
@@ -26,16 +26,16 @@ func isDatabaseFailure(ctx context.Context, err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if errors.Is(err, eventstore.ErrDupEvent) {
+	if errors.Is(err, storage.ErrDupEvent) {
 		return false
 	}
 
 	expected := []error{
-		postgresql.TooManyIDs,
-		postgresql.TooManyAuthors,
-		postgresql.TooManyKinds,
-		postgresql.TooManyTagValues,
-		postgresql.EmptyTagSet,
+		postgres.ErrTooManyIDs,
+		postgres.ErrTooManyAuthors,
+		postgres.ErrTooManyKinds,
+		postgres.ErrTooManyTagValues,
+		postgres.ErrEmptyTagSet,
 	}
 	for _, target := range expected {
 		if errors.Is(err, target) {

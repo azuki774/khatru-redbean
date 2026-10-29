@@ -1,27 +1,39 @@
 # khatru-redbean
 
-Nostr relay server based in [khatru](https://github.com/fiatjaf/khatru)
+Nostr relay server with internally maintained protocol, relay, and PostgreSQL implementations.
 
 ## 概要
 
-khatru-redbeanは、[khatru](https://github.com/fiatjaf/khatru)をベースにしたNostrリレーサーバーです。PostgreSQLをバックエンドとして使用し、NIP-11に対応しています。
+khatru-redbean は、khatru・go-nostr・eventstore 由来の実装をリポジトリ内で保守する Nostr リレーサーバーです。PostgreSQL をバックエンドとして使用します。
 
 ## 必要な環境
 
 - Go 1.27.3以上（CI・Docker・開発コンテナは Go 1.27.3 を使用）
 - PostgreSQL データベース
 
-eventstore は既存 PostgreSQL データとの互換性のため v0.17.5 を使用しています。[v0.17.6 以降のタグ保存形式変更](https://github.com/fiatjaf/eventstore/commit/359b43d6010b4060808de4720524db5756370b91)には、既存イベントの `tagvalues` の再計算が必要です。今後の更新では DB 移行を併せて実施してください。
+PostgreSQL の保存形式と移行時の注意点は [PostgreSQL compatibility](docs/source-origins.md#postgresql-compatibility) を参照してください。
+
+## コードの管理
+
+- `internal/nostr/`: イベント・フィルタ・署名・JSON・必要な NIP の実装
+- `internal/relay/engine/`: HTTP/WebSocket・購読・配信・認証などのリレーエンジン
+- `internal/storage/postgres/`: PostgreSQL の保存・検索・削除・置換
+
+これらのパッケージはプロジェクト内で直接保守します。汎用の暗号・WebSocket・SQL・Telemetry ライブラリは `go.mod` で管理します。
+
+詳細は [実装の出典と保守方針](docs/source-origins.md)、[ディレクトリ構成と依存関係](docs/directory.md) を参照してください。
 
 ## ビルド
 
 ### バイナリのビルド
 
+配布ビルドは Linux amd64/arm64 向けで、`CGO_ENABLED=0` の静的リンクバイナリを生成します。
+
 ```bash
 make bin
 ```
 
-バイナリは `bin/khatru-redbean` に生成されます。
+バイナリは `bin/khatru-redbean`、ライセンス通知は `bin/licenses/` に生成されます。配布時は `LICENSE` と `THIRD_PARTY_NOTICES` をバイナリに同梱してください。
 
 `arm64` 向けにビルドする場合は以下を実行してください。
 
@@ -154,7 +166,7 @@ export COUNTRY_ONLY="JP"
 - ✅ NIP-11（リレー情報ドキュメント）対応
 - ✅ 国別アクセス制限（Cloudflare経由の場合）
 - ✅ グレースフルシャットダウン
-- ✅ 大きなタグの防止（最大100タグ）
+- ✅ インデックス対象のタグ値の長さ制限（最大100バイト）
 - ✅ NIP-01, 11, 40, 42, 70, 86 対応
 
 ## シャットダウン

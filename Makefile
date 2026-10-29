@@ -14,8 +14,9 @@ LDFLAGS ?= -s -w -extldflags '-static' \
 .PHONY: bin build clean tidy fmt test staticcheck check setup
 
 bin:
-	mkdir -p $(BUILD_DIR)
+	mkdir -p $(BUILD_DIR)/licenses
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(PKG)
+	cp LICENSE THIRD_PARTY_NOTICES $(BUILD_DIR)/licenses/
 
 build:
 	docker build -t azuki774/khatru-redbean:dev -f Dockerfile .

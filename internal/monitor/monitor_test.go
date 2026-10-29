@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuki774/khatru-redbean/internal/nostr"
 	"github.com/coder/websocket"
-	"github.com/nbd-wtf/go-nostr"
 )
 
 func config() Config {

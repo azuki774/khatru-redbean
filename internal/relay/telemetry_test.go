@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/azuki774/khatru-redbean/internal/nostr"
 	"github.com/coder/websocket"
-	"github.com/nbd-wtf/go-nostr"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"

@@ -9,11 +9,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fiatjaf/eventstore/postgresql"
-	"github.com/fiatjaf/khatru"
-	"github.com/fiatjaf/khatru/policies"
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip11"
+	"github.com/azuki774/khatru-redbean/internal/nostr"
+	"github.com/azuki774/khatru-redbean/internal/nostr/nip11"
+	"github.com/azuki774/khatru-redbean/internal/relay/engine"
+	"github.com/azuki774/khatru-redbean/internal/relay/engine/policies"
+	"github.com/azuki774/khatru-redbean/internal/storage/postgres"
 	"go.uber.org/zap"
 )
 
@@ -35,7 +35,7 @@ func NewInstance(port int, databaseUrl string, countryOnly string, info *nip11.R
 
 func (i *instance) Start(ctx context.Context) error {
 	// create the relay instance
-	relay := khatru.NewRelay()
+	relay := engine.NewRelay()
 	telemetry, err := newRelayTelemetry()
 	if err != nil {
 		return err
@@ -146,7 +146,7 @@ func shutdownServer(server *http.Server) {
 }
 
 // インメモリでリレー情報を管理するときのセット関数（テスト用）
-func SetInmemoryRelay(relay *khatru.Relay) {
+func SetInmemoryRelay(relay *engine.Relay) {
 	// you must bring your own storage scheme -- if you want to have any
 	store := make(map[string]*nostr.Event, 120)
 
@@ -180,7 +180,7 @@ func SetInmemoryRelay(relay *khatru.Relay) {
 }
 
 // postgres でリレー情報を管理するときのセット関数
-func SetPostgresRelay(relay *khatru.Relay, databaseUrl string) error {
+func SetPostgresRelay(relay *engine.Relay, databaseUrl string) error {
 	telemetry, err := newRelayTelemetry()
 	if err != nil {
 		return err
@@ -189,7 +189,7 @@ func SetPostgresRelay(relay *khatru.Relay, databaseUrl string) error {
 	return setPostgresRelay(relay, databaseUrl, telemetry)
 }
 
-func setPostgresRelay(relay *khatru.Relay, databaseUrl string, telemetry *relayTelemetry) error {
+func setPostgresRelay(relay *engine.Relay, databaseUrl string, telemetry *relayTelemetry) error {
 	// DB接続 (eventstore)
 	zap.S().Infow("database initializing...")
 
@@ -197,7 +197,7 @@ func setPostgresRelay(relay *khatru.Relay, databaseUrl string, telemetry *relayT
 		return fmt.Errorf("DATABASE_URL is nil")
 	}
 
-	db := postgresql.PostgresBackend{DatabaseURL: databaseUrl}
+	db := postgres.PostgresBackend{DatabaseURL: databaseUrl}
 	if err := db.Init(); err != nil {
 		return err
 	}

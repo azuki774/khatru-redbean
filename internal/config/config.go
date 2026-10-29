@@ -1,6 +1,6 @@
 package config
 
-import "github.com/nbd-wtf/go-nostr/nip11"
+import "github.com/azuki774/khatru-redbean/internal/nostr/nip11"
 
 // khatru-redbean 向けのコンフィグを設定
 func NewNIP11InfoForredbean(description, pubkey, contact string) *nip11.RelayInformationDocument {

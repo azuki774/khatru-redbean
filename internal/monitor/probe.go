@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/azuki774/khatru-redbean/internal/nostr"
 	"github.com/coder/websocket"
-	"github.com/nbd-wtf/go-nostr"
 )
 
 var ErrRejected = errors.New("relay rejected subscription")
