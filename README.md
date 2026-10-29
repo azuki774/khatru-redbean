@@ -11,7 +11,7 @@ khatru-redbean は、khatru・go-nostr・eventstore 由来の実装をリポジ�
 - Go 1.27.3以上（CI・Docker・開発コンテナは Go 1.27.3 を使用）
 - PostgreSQL データベース
 
-PostgreSQL 実装は eventstore v0.17.5 由来の保存形式を維持しています。[v0.17.6 以降のタグ保存形式変更](https://github.com/fiatjaf/eventstore/commit/359b43d6010b4060808de4720524db5756370b91)は取り込んでいないため、今回のコード取り込みに伴う DB 移行やイベント再投入は不要です。将来保存形式を変更する場合は、既存イベントとインデックスの移行を別途実施してください。
+PostgreSQL の保存形式と移行時の注意点は [PostgreSQL compatibility](docs/source-origins.md#postgresql-compatibility) を参照してください。
 
 ## コードの管理
 
@@ -19,21 +19,21 @@ PostgreSQL 実装は eventstore v0.17.5 由来の保存形式を維持してい�
 - `internal/relay/engine/`: HTTP/WebSocket・購読・配信・認証などのリレーエンジン
 - `internal/storage/postgres/`: PostgreSQL の保存・検索・削除・置換
 
-これらは通常の所有パッケージであり、vendor や外部ライブラリへの互換ラッパーではありません。旧 khatru・go-nostr・eventstore の3モジュールへの外部依存はなく、汎用の暗号・WebSocket・SQL・Telemetry ライブラリは引き続き `go.mod` で管理します。
+これらのパッケージはプロジェクト内で直接保守します。汎用の暗号・WebSocket・SQL・Telemetry ライブラリは `go.mod` で管理します。
 
-配布対象は Linux amd64/arm64 の `CGO_ENABLED=0` 通常ビルドです。署名・検証と JSON メッセージ解析は Go 実装に統一し、未使用の C/asm・Sonic・debug・JavaScript 向け代替実装は含めていません。検証用テスト・必要な fixture・ライセンス通知は保持しています。
-
-取り込み元の固定版・チェックサム・保守方針は [docs/source-origins.md](docs/source-origins.md)、構成は [docs/directory.md](docs/directory.md) を参照してください。配布時は `LICENSE` と `THIRD_PARTY_NOTICES` を同梱してください。`make bin` は出力先の `licenses/`、Docker イメージは `/usr/share/licenses/khatru-redbean/` に両ファイルを配置します。
+詳細は [実装の出典と保守方針](docs/source-origins.md)、[ディレクトリ構成と依存関係](docs/directory.md) を参照してください。
 
 ## ビルド
 
 ### バイナリのビルド
 
+配布ビルドは Linux amd64/arm64 向けで、`CGO_ENABLED=0` の静的リンクバイナリを生成します。
+
 ```bash
 make bin
 ```
 
-バイナリは `bin/khatru-redbean` に生成されます。
+バイナリは `bin/khatru-redbean`、ライセンス通知は `bin/licenses/` に生成されます。配布時は `LICENSE` と `THIRD_PARTY_NOTICES` をバイナリに同梱してください。
 
 `arm64` 向けにビルドする場合は以下を実行してください。
 

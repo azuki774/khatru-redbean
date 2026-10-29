@@ -8,7 +8,6 @@
 │   ├── logger/                   # ログ設定
 │   ├── monitor/                  # リレーの実接続監視
 │   ├── nostr/                    # 共通型・署名・JSON・クライアント処理
-│   │   └── nip11/                # 必要な NIP 実装（他に40/42/45/70/77/86）
 │   ├── relay/                    # 起動・独自ポリシー・Telemetry の組み立て
 │   │   └── engine/               # 汎用リレーエンジン
 │   │       └── policies/         # 汎用の投稿・検索ポリシー
@@ -31,8 +30,12 @@
 └── main.go
 ```
 
-`nostr` は共通の型とプロトコル実装です。`storage` は `nostr` を使用し、`engine` は `nostr` と storage の共通契約・共有エラーなどを使用します。`storage/postgres` は engine に依存せず、engine も PostgreSQL の具体実装に依存しません。`engine/policies` は engine を使用しますが、逆向きの依存はありません。既存の `relay` がこれらを組み立てます。
+## 依存関係
 
-Nostr 関連実装は通常の所有パッケージであり、vendor や旧モジュールを参照するラッパーではありません。取り込み範囲と元ソースについては [source-origins.md](source-origins.md) を参照してください。
+- `internal/nostr` は、共通のイベント型と Nostr プロトコル処理を提供します。
+- `internal/storage` は `nostr` を使用し、保存の共通契約・エラーを定義します。`storage/postgres` が PostgreSQL の具体実装を担当します。
+- `internal/relay/engine` は `nostr` と `storage` の共通契約を使用します。PostgreSQL の具体実装と `engine/policies` には依存しません。
+- `internal/relay/engine/policies` は `engine` を使用するポリシー集です。
+- `internal/relay` が、エンジン・PostgreSQL・設定・独自ポリシー・Telemetry を組み立てます。
 
-本番用ソースは Linux amd64/arm64 の `CGO_ENABLED=0` 通常ビルドで使用する Go 実装に限定しています。未使用の C/asm・Sonic・debug・JavaScript 向け代替実装は含めず、テスト・必要な fixture・ライセンス通知は保持します。
+元ライブラリのバージョン、実装範囲、互換性の制約は [Source provenance](source-origins.md) を参照してください。
