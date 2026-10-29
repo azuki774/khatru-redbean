@@ -1,5 +1,3 @@
-//go:build !libsecp256k1
-
 package nostr
 
 import (

@@ -21,6 +21,8 @@ PostgreSQL 実装は eventstore v0.17.5 由来の保存形式を維持してい�
 
 これらは通常の所有パッケージであり、vendor や外部ライブラリへの互換ラッパーではありません。旧 khatru・go-nostr・eventstore の3モジュールへの外部依存はなく、汎用の暗号・WebSocket・SQL・Telemetry ライブラリは引き続き `go.mod` で管理します。
 
+配布対象は Linux amd64/arm64 の `CGO_ENABLED=0` 通常ビルドです。署名・検証と JSON メッセージ解析は Go 実装に統一し、未使用の C/asm・Sonic・debug・JavaScript 向け代替実装は含めていません。検証用テスト・必要な fixture・ライセンス通知は保持しています。
+
 取り込み元の固定版・チェックサム・保守方針は [docs/source-origins.md](docs/source-origins.md)、構成は [docs/directory.md](docs/directory.md) を参照してください。配布時は `LICENSE` と `THIRD_PARTY_NOTICES` を同梱してください。`make bin` は出力先の `licenses/`、Docker イメージは `/usr/share/licenses/khatru-redbean/` に両ファイルを配置します。
 
 ## ビルド

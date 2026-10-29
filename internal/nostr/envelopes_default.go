@@ -1,5 +1,3 @@
-//go:build !sonic
-
 package nostr
 
 import (

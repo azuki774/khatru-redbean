@@ -24,7 +24,9 @@ github.com/fiatjaf/eventstore v0.17.5 h1:/3CRthtZmkcTM01IxEiebydM5MKYZhZcQBKMSbL
 
 ルートパッケージと、`nip11`、`nip40`、`nip42`、`nip45`、`nip70`、`nip77`、`nip86` および必要な HyperLogLog・negentropy サブパッケージを取り込んでいます。同じパッケージ内にあるクライアント処理も維持しています。未使用の SDK、他の NIP パッケージ、サンプルアプリは対象外です。
 
-生成済み Event/Filter JSON コードと、`sonic`、`debug`、`js`、`libsecp256k1` のビルド条件別ソースを保持しています。任意の cgo 実装に必要な `libsecp256k1/` の C ソース・生成済みテーブルも保持しています。通常の配布ビルドは従来どおり `CGO_ENABLED=0` の Go 実装を使用します。`sonic` や cgo を有効にしたビルドは、通常ビルドと別に検証してください。
+本番用ソースは、現在の配布対象である Linux amd64/arm64 の `CGO_ENABLED=0` 通常ビルドで使用するファイルに限定しています。署名・検証と JSON メッセージ解析は Go 実装に統一し、未使用の C/asm ソース、`libsecp256k1`・`sonic`・`debug`・JavaScript 向け代替実装は含めていません。これらの任意ビルドモードは提供しません。
+
+生成済み Event/Filter JSON の Go コードは実行に必要なため保持しています。テスト、テストに必要な fixture、ライセンス通知も検証・配布に必要なものとして保持します。
 
 ### khatru 由来
 
@@ -41,6 +43,7 @@ PostgreSQL のテーブル、インデックス、`tags_to_tagvalues` 関数と�
 ## ローカルでの変更
 
 - import とパッケージ名を所有パッケージの配置に合わせて変更しています。
+- 現行ビルドで除外される代替実装とその付属ファイルを除去し、残した Go 実装の不要なビルド条件を外しています。
 - 内部エラー名を `ErrUnknownLabel`、`ErrTooManyIDs` などに統一しました。元のエラー文字列と重複エラーの共有は維持しています。旧名の互換エイリアスはありません。
 - context キーをパッケージ固有の型にしました。取得側と設定側は同じキーを共有し、アプリのテストも非公開キーの数値を再現せず、実接続の context を使用します。
 - 静的解析に従い、未使用の定数・代入・無効な break・冗長な return/ループと未使用レシーバー名を除去しました。JSON のフィールド・署名対象・SQL の意味は変更していません。
@@ -53,9 +56,8 @@ PostgreSQL のテーブル、インデックス、`tags_to_tagvalues` 関数と�
 
 - go-nostr: MIT、Copyright (c) 2022 nbd。`internal/nostr/LICENSE.md` を保持します。
 - khatru と eventstore: Unlicense。それぞれの配置先に元の `LICENSE` を保持します。
-- go-nostr に同梱された libsecp256k1: 個別の MIT 著作権表示を保持します。元の配布キャッシュで欠けていた `COPYING` は [libsecp256k1 の許諾文](https://github.com/bitcoin-core/secp256k1/blob/master/COPYING)から補完しています。
 
-[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES) に、取り込んだソースの許諾文と同梱 C ソースの著作権表示をまとめています。プロジェクトの `LICENSE` とともに、ソース・バイナリ・コンテナの配布物へ同梱してください。`make bin` は出力先の `licenses/` に、Docker イメージは `/usr/share/licenses/khatru-redbean/` に両ファイルを配置します。
+[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES) に、取り込んだソースの許諾文をまとめています。プロジェクトの `LICENSE` とともに、ソース・バイナリ・コンテナの配布物へ同梱してください。`make bin` は出力先の `licenses/` に、Docker イメージは `/usr/share/licenses/khatru-redbean/` に両ファイルを配置します。
 
 外部依存の個別ライセンスも引き続き適用されます。この文書と notices は、外部依存全体のライセンス監査の代わりではありません。
 
