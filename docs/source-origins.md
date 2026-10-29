@@ -38,13 +38,9 @@ Protocol encoding, event ID and signature semantics, and the PostgreSQL storage 
 
 The PostgreSQL schema, indexes, `tags_to_tagvalues` function, and tag encoding are compatible with eventstore v0.17.5. Existing databases using that format can be reused.
 
-The later upstream [tag-encoding change](https://github.com/fiatjaf/eventstore/commit/359b43d6010b4060808de4720524db5756370b91) is not part of this baseline. Adopting it requires an explicit migration plan for existing events and tag indexes; updating the Go implementation alone is not sufficient.
+Changes to the schema or tag encoding require a migration plan for existing events and tag indexes; updating the Go implementation alone is not sufficient.
 
-## Maintaining these packages
-
-Modify the local packages directly. Updating dependencies with `go get` does not update these implementations.
-
-When porting an upstream fix, compare it against the recorded baseline and account for the local adaptations and package boundaries. When adopting a new baseline, update its version, commit, and module checksum here, and review its license notices.
+## Development checks
 
 Run the repository checks and both release builds:
 
