@@ -29,6 +29,8 @@ type relayTelemetry struct {
 	rejectedConnections metric.Int64Counter
 
 	connectionStarts sync.Map
+
+	onDatabaseError func(operation string, err error)
 }
 
 func newRelayTelemetry() (*relayTelemetry, error) {
@@ -214,6 +216,10 @@ func (t *relayTelemetry) finishDatabase(ctx context.Context, span trace.Span, st
 
 	t.databaseOps.Add(ctx, 1, metric.WithAttributes(metricAttributes...))
 	t.databaseDuration.Record(ctx, time.Since(started).Seconds(), metric.WithAttributes(metricAttributes...))
+
+	if t.onDatabaseError != nil && isDatabaseFailure(ctx, err) {
+		t.onDatabaseError(operation, err)
+	}
 }
 
 // httpMiddleware wraps the relay HTTP handler to record a server span per

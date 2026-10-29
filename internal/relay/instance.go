@@ -41,6 +41,14 @@ func (i *instance) Start(ctx context.Context) error {
 		return err
 	}
 
+	databaseFailures := make(chan databaseFailure, 1)
+	telemetry.onDatabaseError = func(operation string, err error) {
+		select {
+		case databaseFailures <- databaseFailure{operation: operation, err: err}:
+		default:
+		}
+	}
+
 	// set up some basic properties (will be returned on the NIP-11 endpoint)
 	relay.Info = i.Info
 
@@ -107,25 +115,34 @@ func (i *instance) Start(ctx context.Context) error {
 		}
 	}()
 
-	// シグナルまたはエラーを待機
+	// シグナル、DBアクセス失敗、サーバーエラーを待機
 	select {
 	case <-sigCtx.Done():
 		zap.S().Info("shutting down gracefully...")
-		// graceful shutdown用のcontextを作成（30秒のタイムアウト）
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		// graceful shutdownを実行
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			zap.S().Errorw("server forced to shutdown", "error", err)
-		} else {
-			zap.S().Info("server exited gracefully")
-		}
+		shutdownServer(server)
+	case failure := <-databaseFailures:
+		zap.S().Errorw("database access failed", "operation", failure.operation, "error", failure.err)
+		shutdownServer(server)
+		return fmt.Errorf("database access failed during %s: %w", failure.operation, failure.err)
 	case err := <-serverErr:
 		zap.S().Errorw("server error", "error", err)
+		return err
 	}
 
 	return nil
+}
+
+func shutdownServer(server *http.Server) {
+	// graceful shutdown用のcontextを作成（30秒のタイムアウト）
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// graceful shutdownを実行
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		zap.S().Errorw("server forced to shutdown", "error", err)
+	} else {
+		zap.S().Info("server exited gracefully")
+	}
 }
 
 // インメモリでリレー情報を管理するときのセット関数（テスト用）
