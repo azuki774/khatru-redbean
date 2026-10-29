@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/postgresql"
-	"github.com/nbd-wtf/go-nostr"
+	"github.com/azuki774/khatru-redbean/internal/nostr"
+	"github.com/azuki774/khatru-redbean/internal/storage"
+	"github.com/azuki774/khatru-redbean/internal/storage/postgres"
 )
 
 func TestIsDatabaseFailure(t *testing.T) {
@@ -27,14 +27,14 @@ func TestIsDatabaseFailure(t *testing.T) {
 		{name: "context canceled", ctx: context.Background(), err: context.Canceled, want: false},
 		{name: "context deadline exceeded", ctx: context.Background(), err: context.DeadlineExceeded, want: false},
 		{name: "canceled request", ctx: canceledCtx, err: errors.New("canceling statement due to user request"), want: false},
-		{name: "duplicate event", ctx: context.Background(), err: eventstore.ErrDupEvent, want: false},
-		{name: "wrapped duplicate event", ctx: context.Background(), err: fmt.Errorf("save: %w", eventstore.ErrDupEvent), want: false},
-		{name: "too many ids", ctx: context.Background(), err: postgresql.TooManyIDs, want: false},
-		{name: "too many authors", ctx: context.Background(), err: postgresql.TooManyAuthors, want: false},
-		{name: "too many kinds", ctx: context.Background(), err: postgresql.TooManyKinds, want: false},
-		{name: "too many tag values", ctx: context.Background(), err: postgresql.TooManyTagValues, want: false},
-		{name: "empty tag set", ctx: context.Background(), err: postgresql.EmptyTagSet, want: false},
-		{name: "wrapped invalid filter", ctx: context.Background(), err: fmt.Errorf("query: %w", postgresql.TooManyIDs), want: false},
+		{name: "duplicate event", ctx: context.Background(), err: storage.ErrDupEvent, want: false},
+		{name: "wrapped duplicate event", ctx: context.Background(), err: fmt.Errorf("save: %w", storage.ErrDupEvent), want: false},
+		{name: "too many ids", ctx: context.Background(), err: postgres.ErrTooManyIDs, want: false},
+		{name: "too many authors", ctx: context.Background(), err: postgres.ErrTooManyAuthors, want: false},
+		{name: "too many kinds", ctx: context.Background(), err: postgres.ErrTooManyKinds, want: false},
+		{name: "too many tag values", ctx: context.Background(), err: postgres.ErrTooManyTagValues, want: false},
+		{name: "empty tag set", ctx: context.Background(), err: postgres.ErrEmptyTagSet, want: false},
+		{name: "wrapped invalid filter", ctx: context.Background(), err: fmt.Errorf("query: %w", postgres.ErrTooManyIDs), want: false},
 	}
 
 	for _, tt := range tests {
@@ -54,7 +54,7 @@ func TestDatabaseOperationReportsFailure(t *testing.T) {
 		want bool
 	}{
 		{name: "database error", ctx: context.Background(), err: errors.New("connection refused"), want: true},
-		{name: "expected duplicate", ctx: context.Background(), err: eventstore.ErrDupEvent, want: false},
+		{name: "expected duplicate", ctx: context.Background(), err: storage.ErrDupEvent, want: false},
 		{name: "canceled request", ctx: context.Background(), err: context.Canceled, want: false},
 	}
 

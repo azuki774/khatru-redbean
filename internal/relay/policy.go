@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fiatjaf/khatru"
-	"github.com/nbd-wtf/go-nostr"
+	"github.com/azuki774/khatru-redbean/internal/nostr"
+	"github.com/azuki774/khatru-redbean/internal/relay/engine"
 	"go.uber.org/zap"
 )
 
@@ -14,7 +14,7 @@ func (i *instance) RestrictCountry(ctx context.Context, event *nostr.Event) (rej
 		return false, "" // 未設定なら無条件OK
 	}
 
-	conn := khatru.GetConnection(ctx)
+	conn := engine.GetConnection(ctx)
 	if conn == nil {
 		zap.S().Warnw("connection information not available, rejecting event", "countryOnly", i.CountryOnly)
 		return true, "blocked: unable to verify country information"
