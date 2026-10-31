@@ -150,29 +150,46 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 			// then delegate to the goroutine
 			go func(message string) {
-				if err != nil {
-					if err == nostr.ErrUnknownLabel && rl.Negentropy {
-						envelope = nip77.ParseNegMessage(message)
-					}
-					if envelope == nil {
-						ws.WriteJSON(nostr.NoticeEnvelope("failed to parse envelope: " + err.Error()))
-						return
-					}
+				// negentropy messages arrive as unknown-label parse errors; parse
+				// them here so the message span can be named after the envelope.
+				if err == nostr.ErrUnknownLabel && rl.Negentropy {
+					envelope = nip77.ParseNegMessage(message)
+				}
+
+				outcome := "ok"
+				if envelope == nil {
+					outcome = "invalid"
+				}
+
+				// shadow the connection context so every message goroutine gets
+				// its own message-scoped context instead of racing on the outer one
+				ctx, end := ctx, func(string) {}
+				if rl.OnMessage != nil {
+					ctx, end = rl.OnMessage(ctx, envelope)
+				}
+				defer func() { end(outcome) }()
+
+				if envelope == nil {
+					ws.WriteJSON(nostr.NoticeEnvelope("failed to parse envelope: " + err.Error()))
+					return
 				}
 
 				switch env := envelope.(type) {
 				case *nostr.EventEnvelope:
 					// check id
 					if !env.Event.CheckID() {
+						outcome = outcomeFromReason("invalid: id is computed incorrectly")
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "invalid: id is computed incorrectly"})
 						return
 					}
 
 					// check signature
 					if ok, err := env.Event.CheckSignature(); err != nil {
+						outcome = outcomeFromReason("error: failed to verify signature")
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to verify signature"})
 						return
 					} else if !ok {
+						outcome = outcomeFromReason("invalid: signature is invalid")
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "invalid: signature is invalid"})
 						return
 					}
@@ -181,6 +198,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 					if nip70.IsProtected(env.Event) {
 						authed := GetAuthed(ctx)
 						if authed == "" {
+							outcome = outcomeFromReason("auth-required: must be published by authenticated event author")
 							RequestAuth(ctx)
 							ws.WriteJSON(nostr.OKEnvelope{
 								EventID: env.Event.ID,
@@ -189,6 +207,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 							})
 							return
 						} else if authed != env.Event.PubKey {
+							outcome = outcomeFromReason("blocked: must be published by event author")
 							ws.WriteJSON(nostr.OKEnvelope{
 								EventID: env.Event.ID,
 								OK:      false,
@@ -197,6 +216,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 					} else if nip70.HasEmbeddedProtected(env.Event) {
+						outcome = outcomeFromReason("blocked: can't repost nip70 protected")
 						ws.WriteJSON(nostr.OKEnvelope{
 							EventID: env.Event.ID,
 							OK:      false,
@@ -255,9 +275,15 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 							RequestAuth(ctx)
 						}
 					}
+					if ok {
+						outcome = "ok"
+					} else {
+						outcome = outcomeFromReason(reason)
+					}
 					ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: ok, Reason: reason})
 				case *nostr.CountEnvelope:
 					if rl.CountEvents == nil && rl.CountEventsHLL == nil {
+						outcome = "unsupported"
 						ws.WriteJSON(nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: "unsupported: this relay does not support NIP-45"})
 						return
 					}
@@ -292,6 +318,10 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 					// a context just for the "stored events" request handler
 					reqCtx, cancelReqCtx := context.WithCancelCause(ctx)
+					// the context is only needed while the stored events are being
+					// loaded (and by listeners before they are registered); release it
+					// once this message has been fully processed
+					defer cancelReqCtx(nil)
 
 					// expose subscription id in the context
 					reqCtx = context.WithValue(reqCtx, subscriptionIdKey, env.SubscriptionID)
@@ -306,6 +336,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						if err != nil {
 							// fail everything if any filter is rejected
 							reason := err.Error()
+							outcome = outcomeFromReason(reason)
 							if strings.HasPrefix(reason, "auth-required:") {
 								RequestAuth(ctx)
 							}
@@ -317,11 +348,9 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 
-					go func() {
-						// when all events have been loaded from databases and dispatched we can fire the EOSE message
-						eose.Wait()
-						ws.WriteJSON(nostr.EOSEEnvelope(env.SubscriptionID))
-					}()
+					// when all events have been loaded from databases and dispatched we can fire the EOSE message
+					eose.Wait()
+					ws.WriteJSON(nostr.EOSEEnvelope(env.SubscriptionID))
 				case *nostr.CloseEnvelope:
 					id := string(*env)
 					rl.removeListenerId(ws, id)
@@ -337,6 +366,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						ws.authLock.Unlock()
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: true})
 					} else {
+						outcome = "invalid"
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to authenticate"})
 					}
 				case *nip77.OpenEnvelope:
@@ -431,4 +461,25 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+}
+
+// outcomeFromReason extracts the outcome label from an OK/CLOSED reason. The
+// reason prefix is normalized by nostr.NormalizeOKMessage, but arbitrary error
+// strings can still reach here, so only a fixed set of labels is accepted.
+func outcomeFromReason(reason string) string {
+	prefix := strings.SplitN(reason, ":", 2)[0]
+	if _, ok := allowedOutcomes[prefix]; ok {
+		return prefix
+	}
+	return "error"
+}
+
+var allowedOutcomes = map[string]struct{}{
+	"ok":            {},
+	"blocked":       {},
+	"error":         {},
+	"auth-required": {},
+	"invalid":       {},
+	"mute":          {},
+	"unsupported":   {},
 }

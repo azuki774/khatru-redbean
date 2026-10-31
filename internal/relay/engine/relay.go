@@ -76,6 +76,13 @@ type Relay struct {
 	OverwriteResponseEvent    []func(ctx context.Context, event *nostr.Event)
 	PreventBroadcast          []func(ws *WebSocket, event *nostr.Event) bool
 
+	// OnMessage is invoked when a parsed websocket message is dispatched to its
+	// handler goroutine. envelope is the parsed message value (nil when parsing
+	// failed); implementations derive the span name and attributes from its type.
+	// It returns a context for message processing and a function that MUST be
+	// called exactly once when processing ends, with a short outcome label.
+	OnMessage func(ctx context.Context, envelope any) (context.Context, func(outcome string))
+
 	// these are used when this relays acts as a router
 	routes                []Route
 	getSubRelayFromEvent  func(*nostr.Event) *Relay // used for handling EVENTs

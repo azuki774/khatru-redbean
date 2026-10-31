@@ -58,6 +58,7 @@ func (i *instance) Start(ctx context.Context) error {
 	relay.OnConnect = append(relay.OnConnect, telemetry.onConnect)
 	relay.OnDisconnect = append(relay.OnDisconnect, telemetry.onDisconnect)
 	relay.RejectConnection = append(relay.RejectConnection, telemetry.rejectConnection)
+	relay.OnMessage = telemetry.messageObserver
 
 	// A. インメモリの場合の実装
 	// SetInmemoryRelay(relay)

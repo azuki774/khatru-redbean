@@ -35,14 +35,18 @@ func (rl *Relay) handleNormal(ctx context.Context, evt *nostr.Event) (skipBroadc
 
 	// Check to see if the event has been deleted by ID
 	for _, query := range rl.QueryEvents {
-		ch, err := query(ctx, nostr.Filter{
+		checkCtx, cancelCheck := context.WithCancel(ctx)
+		ch, err := query(checkCtx, nostr.Filter{
 			Kinds: []int{5},
 			Tags:  nostr.TagMap{"#e": []string{evt.ID}},
 		})
 		if err != nil {
+			cancelCheck()
 			continue
 		}
 		target := <-ch
+		// we only need the first event; stop the storage scan right away
+		cancelCheck()
 		if target == nil {
 			continue
 		}
@@ -75,15 +79,19 @@ func (rl *Relay) handleNormal(ctx context.Context, evt *nostr.Event) (skipBroadc
 			}
 
 			address := fmt.Sprintf("%d:%s:%s", evt.Kind, evt.PubKey, dTagValue)
-			ch, err := query(ctx, nostr.Filter{
+			checkCtx, cancelCheck := context.WithCancel(ctx)
+			ch, err := query(checkCtx, nostr.Filter{
 				Kinds: []int{5},
 				Since: &evt.CreatedAt,
 				Tags:  nostr.TagMap{"#a": []string{address}},
 			})
 			if err != nil {
+				cancelCheck()
 				continue
 			}
 			target := <-ch
+			// we only need the first event; stop the storage scan right away
+			cancelCheck()
 			if target == nil {
 				continue
 			}
