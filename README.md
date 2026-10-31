@@ -100,13 +100,13 @@ export CONTACT="admin@example.com"
 
 ## Telemetry
 
-OpenTelemetry では、WebSocket メッセージごとにメッセージ Span を root とする 1 本のトレースを送信します。メッセージの種類に応じて `nostr.event`、`nostr.req`、`nostr.count`、`nostr.auth`、`nostr.close`、`nostr.negentropy` の Span が作られます。parse に失敗した場合は Span 名が `ws.parse`、それ以外の種別（NOTICE など通常クライアントから送られないもの）は `ws.message` になります。メッセージ処理由来のポリシー判定（`nostr.policy.*`）と DB 操作（`postgres.*`）の Span が同じトレースに階層構造で連なります。NIP-40 期限チェックなどの定期処理は独立したトレースになります。`nostr.req` Span は初期配信の完了（EOSE）までの時間を計測します。
+OpenTelemetry では、WebSocket メッセージごとにメッセージ Span を root とする 1 本のトレースを送信します。メッセージの種類に応じて `nostr.event`、`nostr.req`、`nostr.count`、`nostr.auth`、`nostr.close` の Span が作られます。parse に失敗した場合は Span 名が `ws.parse`、それ以外の種別（NOTICE など通常クライアントから送られないもの）は `ws.message` になります。メッセージ処理に由来するポリシー判定（`nostr.policy.*`）と DB 操作（`postgres.*`）の Span が同じトレースに親子関係で連なります。NIP-40 期限チェックなどの定期処理は独立したトレースになります。`nostr.req` Span は初期配信の完了（EOSE）までの時間を計測します。
 
 HTTP リクエスト（NIP-11 など）と WebSocket ハンドシェイクには `http.request` Span を送信します（WebSocket の場合は属性 `nostr.websocket=true`）。メッセージ Span はハンドシェイクの Span へ link で関連付けられ、属性 `nostr.connection.id` で接続単位の相関が取れます。メッセージ Span には `nostr.message.type` と処理結果 `nostr.outcome`（`blocked` / `error` / `auth-required` / `invalid` / `mute` / `unsupported`。正常時は省略）が付きます。
 
-DB 検索（`postgres.query_events`）では、Span と `db.client.operation.duration` はデータベースのスキャン完了までの時間を表し、クライアントへのイベント配信待ちは含みません。保存・集計などの操作は操作完了までの時間を計測します。また、接続ライフサイクルと Go ランタイムの Metrics も送信します。
+DB 検索（`postgres.query_events`）では、Span と `db.client.operation.duration` はデータベースのスキャン完了までの時間を表し、クライアントへのイベント配信待ちは含みません。保存・集計などの操作では、Span とヒストグラムは操作完了までの時間を計測します。
 
-Metrics には以下が含まれます。
+Span に加えて、接続ライフサイクルと Go ランタイムの Metrics も送信します。Metrics には以下が含まれます。
 
 - DB 操作の回数・所要時間ヒストグラム: `db.client.operation.duration`、`nostr.relay.db.operations`
 - ポリシー判定回数: `nostr.relay.policy.decisions`
@@ -173,7 +173,7 @@ export COUNTRY_ONLY="JP"
 - ✅ 国別アクセス制限（Cloudflare経由の場合）
 - ✅ グレースフルシャットダウン
 - ✅ インデックス対象のタグ値の長さ制限（最大100バイト）
-- ✅ NIP-01, 11, 40, 42, 70, 86 対応
+- ✅ NIP-01, 11, 40, 42, 45, 70, 86 対応
 
 ## シャットダウン
 
