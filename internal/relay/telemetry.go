@@ -2,12 +2,16 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/azuki774/khatru-redbean/internal/nostr"
+	"github.com/azuki774/khatru-redbean/internal/nostr/nip77"
+	"github.com/azuki774/khatru-redbean/internal/relay/engine"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -92,6 +96,10 @@ func (t *relayTelemetry) eventOperation(operation string, next func(context.Cont
 	}
 }
 
+// queryPendingLimit bounds how many events the wrapper buffers ahead of the
+// consumer before it stops draining the storage channel (backpressure).
+const queryPendingLimit = 1024
+
 func (t *relayTelemetry) queryOperation(next func(context.Context, nostr.Filter) (chan *nostr.Event, error)) func(context.Context, nostr.Filter) (chan *nostr.Event, error) {
 	return func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
 		ctx, span, started := t.startDatabase(ctx, "query_events", filterAttributes(filter))
@@ -104,19 +112,45 @@ func (t *relayTelemetry) queryOperation(next func(context.Context, nostr.Filter)
 		wrapped := make(chan *nostr.Event)
 		go func() {
 			defer close(wrapped)
-			defer t.finishDatabase(ctx, span, started, "query_events", nil)
 
-			for {
+			var queue []*nostr.Event
+			spanEnded := false
+			endSpan := func() {
+				if !spanEnded {
+					spanEnded = true
+					t.finishDatabase(ctx, span, started, "query_events", nil)
+				}
+			}
+			defer endSpan()
+
+			sourceOpen := true
+			for sourceOpen || len(queue) > 0 {
+				// enable each case dynamically: a nil channel blocks forever, so
+				// receiving is disabled while the queue is full and sending is
+				// disabled while the queue is empty
+				var recvCh chan *nostr.Event
+				if sourceOpen && len(queue) < queryPendingLimit {
+					recvCh = events
+				}
+				var sendCh chan *nostr.Event
+				var head *nostr.Event
+				if len(queue) > 0 {
+					sendCh = wrapped
+					head = queue[0]
+				}
+
 				select {
-				case event, ok := <-events:
+				case event, ok := <-recvCh:
 					if !ok {
-						return
+						sourceOpen = false
+						// the database scan is done: the span ends here even if
+						// delivering the remaining events takes longer
+						endSpan()
+						continue
 					}
-					select {
-					case wrapped <- event:
-					case <-ctx.Done():
-						return
-					}
+					queue = append(queue, event)
+				case sendCh <- head:
+					queue = queue[1:]
 				case <-ctx.Done():
 					return
 				}
@@ -124,6 +158,87 @@ func (t *relayTelemetry) queryOperation(next func(context.Context, nostr.Filter)
 		}()
 		return wrapped, nil
 	}
+}
+
+// messageObserver starts the root span for a single websocket message. The
+// message context is derived from the connection context (which is not tied to
+// the hijacked HTTP request) and links back to the handshake request span.
+func (t *relayTelemetry) messageObserver(ctx context.Context, envelope any) (context.Context, func(string)) {
+	spanName := messageSpanName(envelope)
+	attributes := []attribute.KeyValue{
+		attribute.String("nostr.message.type", messageTypeLabel(spanName)),
+	}
+	attributes = append(attributes, messageAttributes(envelope)...)
+	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindServer)}
+	if ws := engine.GetConnection(ctx); ws != nil {
+		attributes = append(attributes, attribute.String("nostr.connection.id", ws.Challenge))
+		if ws.Request != nil {
+			if sc := trace.SpanContextFromContext(ws.Request.Context()); sc.IsValid() {
+				opts = append(opts, trace.WithLinks(trace.Link{SpanContext: sc}))
+			}
+		}
+	}
+	opts = append(opts, trace.WithAttributes(attributes...))
+
+	ctx, span := t.tracer.Start(ctx, spanName, opts...)
+	var once sync.Once
+	done := func(outcome string) {
+		once.Do(func() {
+			if outcome != "" && outcome != "ok" {
+				span.SetAttributes(attribute.String("nostr.outcome", outcome))
+				span.SetStatus(codes.Error, outcome)
+			}
+			span.End()
+		})
+	}
+	return ctx, done
+}
+
+// messageSpanName returns the span-ready name for a parsed message envelope.
+func messageSpanName(envelope any) string {
+	switch envelope.(type) {
+	case *nostr.EventEnvelope:
+		return "nostr.event"
+	case *nostr.ReqEnvelope:
+		return "nostr.req"
+	case *nostr.CountEnvelope:
+		return "nostr.count"
+	case *nostr.CloseEnvelope:
+		return "nostr.close"
+	case *nostr.AuthEnvelope:
+		return "nostr.auth"
+	case *nip77.OpenEnvelope, *nip77.MessageEnvelope, *nip77.CloseEnvelope:
+		return "nostr.negentropy"
+	case nil:
+		return "ws.parse"
+	default:
+		return "ws.message"
+	}
+}
+
+// messageAttributes returns the low-cardinality summary attributes carried by
+// the message envelope (event class for EVENT, filter shape for REQ/COUNT).
+func messageAttributes(envelope any) []attribute.KeyValue {
+	switch env := envelope.(type) {
+	case *nostr.EventEnvelope:
+		if env != nil {
+			return eventAttributes(&env.Event)
+		}
+	case *nostr.ReqEnvelope:
+		if env != nil && len(env.Filters) > 0 {
+			return filterAttributes(env.Filters[0])
+		}
+	case *nostr.CountEnvelope:
+		if env != nil {
+			return filterAttributes(env.Filter)
+		}
+	}
+	return nil
+}
+
+func messageTypeLabel(messageType string) string {
+	label := strings.TrimPrefix(messageType, "nostr.")
+	return strings.TrimPrefix(label, "ws.")
 }
 
 func (t *relayTelemetry) countOperation(next func(context.Context, nostr.Filter) (int64, error)) func(context.Context, nostr.Filter) (int64, error) {
@@ -206,7 +321,9 @@ func (t *relayTelemetry) finishDatabase(ctx context.Context, span trace.Span, st
 		attribute.String("db.system.name", "postgresql"),
 		attribute.String("db.operation.name", operation),
 	}
-	if err != nil {
+	// cancellations caused by an abandoned consumer or a canceled message are
+	// benign: they are not database failures and carry no error information
+	if err != nil && !isBenignDatabaseCancel(ctx, err) {
 		errorType := reflect.TypeOf(err).String()
 		span.SetAttributes(attribute.String("error.type", errorType))
 		span.SetStatus(codes.Error, "database operation failed")
@@ -222,25 +339,38 @@ func (t *relayTelemetry) finishDatabase(ctx context.Context, span trace.Span, st
 	}
 }
 
+func isBenignDatabaseCancel(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) || ctx.Err() != nil
+}
+
 // httpMiddleware wraps the relay HTTP handler to record a server span per
 // request. For WebSocket connections this captures the upgrade request; the
 // long-lived connection itself is covered by the connection metrics below.
 func (t *relayTelemetry) httpMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isWebSocket := strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+		attributes := []attribute.KeyValue{
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
+		}
+		if isWebSocket {
+			attributes = append(attributes, attribute.Bool("nostr.websocket", true))
+		}
+
 		ctx, span := t.tracer.Start(r.Context(), "http.request",
 			trace.WithSpanKind(trace.SpanKindServer),
-			trace.WithAttributes(
-				attribute.String("http.request.method", r.Method),
-				attribute.String("url.path", r.URL.Path),
-			),
+			trace.WithAttributes(attributes...),
 		)
 		defer span.End()
 
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r.WithContext(ctx))
 
-		span.SetAttributes(attribute.Int("http.response.status_code", sw.status))
-		if sw.status >= http.StatusInternalServerError {
+		// a hijacked websocket connection never produces an HTTP status
+		if !isWebSocket || sw.wroteHeader {
+			span.SetAttributes(attribute.Int("http.response.status_code", sw.status))
+		}
+		if sw.wroteHeader && sw.status >= http.StatusInternalServerError {
 			span.SetStatus(codes.Error, "server error")
 		}
 	})
@@ -269,11 +399,13 @@ func (t *relayTelemetry) rejectConnection(r *http.Request) bool {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
+	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(code)
 }
 
