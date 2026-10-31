@@ -41,11 +41,15 @@ func (rl *Relay) handleDeleteRequest(ctx context.Context, evt *nostr.Event) erro
 
 			ctx := context.WithValue(ctx, internalCallKey, struct{}{})
 			for _, query := range rl.QueryEvents {
-				ch, err := query(ctx, f)
+				checkCtx, cancelCheck := context.WithCancel(ctx)
+				ch, err := query(checkCtx, f)
 				if err != nil {
+					cancelCheck()
 					continue
 				}
 				target := <-ch
+				// we only need the first event; stop the storage scan right away
+				cancelCheck()
 				if target == nil {
 					continue
 				}

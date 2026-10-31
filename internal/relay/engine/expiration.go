@@ -110,12 +110,17 @@ func (em *expirationManager) checkExpiredEvents(ctx context.Context) {
 
 		ctx := context.WithValue(ctx, internalCallKey, struct{}{})
 		for _, query := range em.relay.QueryEvents {
-			ch, err := query(ctx, nostr.Filter{IDs: []string{next.id}})
+			checkCtx, cancelCheck := context.WithCancel(ctx)
+			ch, err := query(checkCtx, nostr.Filter{IDs: []string{next.id}})
 			if err != nil {
+				cancelCheck()
 				continue
 			}
 
-			if evt := <-ch; evt != nil {
+			evt := <-ch
+			// we only need the first event; stop the storage scan right away
+			cancelCheck()
+			if evt != nil {
 				for _, del := range em.relay.DeleteEvent {
 					del(ctx, evt)
 				}

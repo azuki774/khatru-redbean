@@ -88,20 +88,6 @@ make clean
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` を設定しない場合、Telemetry は `10.254.0.10:4318` へ OTLP/HTTP で送信されます。通信には TLS を使用しません。
 
-OpenTelemetry では PostgreSQL の保存・検索・集計・削除・置換処理と、イベント・フィルタのポリシー判定を Span および Metrics として送信します。また、HTTP/WebSocket のリクエストごとに `http.request` Span を送信し、接続ライフサイクルと Go ランタイムの Metrics も送信します。
-
-Metrics には以下が含まれます。
-
-- DB 操作の回数・所要時間ヒストグラム: `db.client.operation.duration`、`nostr.relay.db.operations`
-- ポリシー判定回数: `nostr.relay.policy.decisions`
-- 接続数（アクティブ接続のゲージ）: `nostr.relay.connections`
-- 接続/切断の発生回数: `nostr.relay.connection.count`（属性 `nostr.connection.state` = `open` / `close`）
-- 接続時間のヒストグラム: `nostr.relay.connection.duration`
-- 拒否された接続の回数: `nostr.relay.connection.rejected`
-- Go ランタイム（GC 回数・ヒープ・goroutine 数など）: `runtime.*`、`process.*`
-
-イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。
-
 ### 環境変数の設定例
 
 ```bash
@@ -111,6 +97,26 @@ export DESCRIPTION="My Nostr Relay"
 export PUBKEY="npub1..."
 export CONTACT="admin@example.com"
 ```
+
+## Telemetry
+
+OpenTelemetry では、WebSocket メッセージごとにメッセージ Span を root とする 1 本のトレースを送信します。メッセージの種類に応じて `nostr.event`、`nostr.req`、`nostr.count`、`nostr.auth`、`nostr.close` の Span が作られます。parse に失敗した場合は Span 名が `ws.parse`、それ以外の種別（NOTICE など通常クライアントから送られないもの）は `ws.message` になります。メッセージ処理に由来するポリシー判定（`nostr.policy.*`）と DB 操作（`postgres.*`）の Span が同じトレースに親子関係で連なります。NIP-40 期限チェックなどの定期処理は独立したトレースになります。`nostr.req` Span は初期配信の完了（EOSE）までの時間を計測します。
+
+HTTP リクエスト（NIP-11 など）と WebSocket ハンドシェイクには `http.request` Span を送信します（WebSocket の場合は属性 `nostr.websocket=true`）。メッセージ Span はハンドシェイクの Span へ link で関連付けられ、属性 `nostr.connection.id` で接続単位の相関が取れます。メッセージ Span には `nostr.message.type` と処理結果 `nostr.outcome`（`blocked` / `error` / `auth-required` / `invalid` / `mute` / `unsupported`。正常時は省略）が付きます。
+
+DB 検索（`postgres.query_events`）では、Span と `db.client.operation.duration` はデータベースのスキャン完了までの時間を表し、クライアントへのイベント配信待ちは含みません。保存・集計などの操作では、Span とヒストグラムは操作完了までの時間を計測します。
+
+Span に加えて、接続ライフサイクルと Go ランタイムの Metrics も送信します。Metrics には以下が含まれます。
+
+- DB 操作の回数・所要時間ヒストグラム: `db.client.operation.duration`、`nostr.relay.db.operations`
+- ポリシー判定回数: `nostr.relay.policy.decisions`
+- 接続数（アクティブ接続のゲージ）: `nostr.relay.connections`
+- 接続/切断の発生回数: `nostr.relay.connection.count`（属性 `nostr.connection.state` = `open` / `close`）
+- 接続時間のヒストグラム: `nostr.relay.connection.duration`
+- 接続試行の回数（現行実装はすべての接続試行を数えます）: `nostr.relay.connection.rejected`
+- Go ランタイム（メモリ使用量・goroutine 数など）: `go.*`（例: `go.goroutine.count`、`go.memory.used`）
+
+イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。`nostr.outcome` には前述の固定ラベルのみを使用します。
 
 ## 使い方
 
@@ -167,7 +173,7 @@ export COUNTRY_ONLY="JP"
 - ✅ 国別アクセス制限（Cloudflare経由の場合）
 - ✅ グレースフルシャットダウン
 - ✅ インデックス対象のタグ値の長さ制限（最大100バイト）
-- ✅ NIP-01, 11, 40, 42, 70, 86 対応
+- ✅ NIP-01, 11, 40, 42, 45, 70, 86 対応
 
 ## シャットダウン
 

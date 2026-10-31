@@ -10,12 +10,17 @@ import (
 	"time"
 
 	"github.com/azuki774/khatru-redbean/internal/nostr"
+	"github.com/azuki774/khatru-redbean/internal/nostr/nip77"
+	"github.com/azuki774/khatru-redbean/internal/relay/engine"
 	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 func TestRelayTelemetryEventPolicyPreservesOutcome(t *testing.T) {
@@ -50,9 +55,69 @@ func TestEventAttributesUseLowCardinalityValues(t *testing.T) {
 	}
 }
 
-func TestQueryOperationEndsSpanAfterChannelIsConsumed(t *testing.T) {
+func TestMessageSpanName(t *testing.T) {
+	cases := []struct {
+		envelope any
+		want     string
+	}{
+		{(*nostr.EventEnvelope)(nil), "nostr.event"},
+		{(*nostr.ReqEnvelope)(nil), "nostr.req"},
+		{(*nostr.CountEnvelope)(nil), "nostr.count"},
+		{(*nostr.CloseEnvelope)(nil), "nostr.close"},
+		{(*nostr.AuthEnvelope)(nil), "nostr.auth"},
+		{(*nip77.OpenEnvelope)(nil), "nostr.negentropy"},
+		{(*nip77.MessageEnvelope)(nil), "nostr.negentropy"},
+		{(*nip77.CloseEnvelope)(nil), "nostr.negentropy"},
+		{nil, "ws.parse"},
+		{(*nostr.NoticeEnvelope)(nil), "ws.message"},
+	}
+
+	for _, tc := range cases {
+		if got := messageSpanName(tc.envelope); got != tc.want {
+			t.Errorf("messageSpanName(%T) = %q, want %q", tc.envelope, got, tc.want)
+		}
+	}
+}
+
+func TestMessageAttributes(t *testing.T) {
+	eventAttrs := messageAttributes(&nostr.EventEnvelope{Event: nostr.Event{Kind: 1}})
+	if value, ok := findAttribute(eventAttrs, "nostr.event.class"); !ok || value.AsString() != "regular" {
+		t.Errorf("nostr.event.class = %v (present=%v), want regular", value.AsString(), ok)
+	}
+
+	reqAttributes := messageAttributes(&nostr.ReqEnvelope{Filters: []nostr.Filter{{Kinds: []int{1}}}})
+	if value, ok := findAttribute(reqAttributes, "nostr.filter.kinds_count_bucket"); !ok || value.AsString() != "1" {
+		t.Errorf("nostr.filter.kinds_count_bucket = %v (present=%v), want 1", value.AsString(), ok)
+	}
+
+	countAttributes := messageAttributes(&nostr.CountEnvelope{Filter: nostr.Filter{Kinds: []int{1, 2}}})
+	if value, ok := findAttribute(countAttributes, "nostr.filter.kinds_count_bucket"); !ok || value.AsString() != "2-5" {
+		t.Errorf("nostr.filter.kinds_count_bucket = %v (present=%v), want 2-5", value.AsString(), ok)
+	}
+
+	if attributes := messageAttributes(&nip77.OpenEnvelope{}); len(attributes) != 0 {
+		t.Errorf("negentropy message attributes = %v, want none", attributes)
+	}
+	if attributes := messageAttributes(nil); len(attributes) != 0 {
+		t.Errorf("nil envelope message attributes = %v, want none", attributes)
+	}
+}
+
+func findAttribute(attributes []attribute.KeyValue, key string) (attribute.Value, bool) {
+	for _, attr := range attributes {
+		if string(attr.Key) == key {
+			return attr.Value, true
+		}
+	}
+	return attribute.Value{}, false
+}
+
+func TestQueryOperationEndsSpanWhenSourceCloses(t *testing.T) {
 	telemetry, recorder := testRelayTelemetry(t)
-	source := make(chan *nostr.Event)
+	source := make(chan *nostr.Event, 2)
+	source <- &nostr.Event{Kind: 1}
+	source <- &nostr.Event{Kind: 2}
+	close(source)
 	query := telemetry.queryOperation(func(context.Context, nostr.Filter) (chan *nostr.Event, error) {
 		return source, nil
 	})
@@ -61,19 +126,93 @@ func TestQueryOperationEndsSpanAfterChannelIsConsumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queryOperation() error = %v", err)
 	}
+
+	// the span ends when the database scan is done, even before the consumer
+	// has read any of the buffered events
+	waitForEndedSpan(t, recorder, "postgres.query_events")
+
+	// and delivery still completes afterwards
+	if event := <-events; event == nil || event.Kind != 1 {
+		t.Fatalf("first event = %v, want kind 1", event)
+	}
+	if event := <-events; event == nil || event.Kind != 2 {
+		t.Fatalf("second event = %v, want kind 2", event)
+	}
+	if _, ok := <-events; ok {
+		t.Error("wrapped channel is still open after the source closed")
+	}
+}
+
+func TestQueryOperationEndsSpanWhenConsumerAbandons(t *testing.T) {
+	telemetry, recorder := testRelayTelemetry(t)
+	source := make(chan *nostr.Event, 1)
+	source <- &nostr.Event{Kind: 1}
+	close(source)
+
+	query := telemetry.queryOperation(func(context.Context, nostr.Filter) (chan *nostr.Event, error) {
+		return source, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := query(ctx, nostr.Filter{}); err != nil {
+		t.Fatalf("queryOperation() error = %v", err)
+	}
+
+	// nobody consumes the wrapped channel: the span must still end on source close
+	waitForEndedSpan(t, recorder, "postgres.query_events")
+
+	cancel()
+}
+
+func TestQueryOperationEndsSpanWhenConsumerStopsBeforeSourceClose(t *testing.T) {
+	telemetry, recorder := testRelayTelemetry(t)
+	source := make(chan *nostr.Event)
+
+	query := telemetry.queryOperation(func(context.Context, nostr.Filter) (chan *nostr.Event, error) {
+		return source, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := query(ctx, nostr.Filter{})
+	if err != nil {
+		t.Fatalf("queryOperation() error = %v", err)
+	}
+
+	// the producer streams asynchronously and then closes the source, while the
+	// consumer stops after a single event: the span must still end on source close.
+	// the delay makes sure the wrapper is already waiting for a consumer that will
+	// never read again when the close arrives.
 	go func() {
 		source <- &nostr.Event{Kind: 1}
+		source <- &nostr.Event{Kind: 2}
+		time.Sleep(100 * time.Millisecond)
 		close(source)
 	}()
-	<-events
 
-	deadline := time.After(time.Second)
-	for len(recorder.Ended()) == 0 {
+	if event := <-events; event == nil || event.Kind != 1 {
+		t.Fatalf("first event = %v, want kind 1", event)
+	}
+
+	// the source is still open: the span must still be running
+	time.Sleep(30 * time.Millisecond)
+	if spans := recorder.Ended(); len(spans) != 0 {
+		t.Fatalf("span ended before the source closed: %v", spans[0].Name())
+	}
+
+	waitForEndedSpan(t, recorder, "postgres.query_events")
+
+	// releasing the wrapper is enough: the span was already ended by source close
+	cancel()
+	for {
 		select {
-		case <-deadline:
-			t.Fatal("query span was not ended")
-		default:
-			time.Sleep(time.Millisecond)
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("wrapped channel did not close after cancellation")
 		}
 	}
 }
@@ -259,4 +398,150 @@ func histogramCount(rm metricdata.ResourceMetrics, name string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func TestFinishDatabaseIgnoresClientCancellation(t *testing.T) {
+	cases := []struct {
+		name   string
+		cancel bool
+		err    error
+	}{
+		{name: "canceled context", cancel: true, err: context.Canceled},
+		{name: "canceled error", cancel: false, err: context.Canceled},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			telemetry, recorder := testRelayTelemetry(t)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.cancel {
+				cancel()
+			}
+			defer cancel()
+
+			_, span, started := telemetry.startDatabase(ctx, "query_events", nil)
+			telemetry.finishDatabase(ctx, span, started, "query_events", tc.err)
+
+			spans := recorder.Ended()
+			if len(spans) != 1 {
+				t.Fatalf("ended spans = %d, want 1", len(spans))
+			}
+			if _, ok := attributeValue(spans[0], "error.type"); ok {
+				t.Error("canceled database operation recorded error.type")
+			}
+			if spans[0].Status().Code == codes.Error {
+				t.Error("canceled database operation recorded error status")
+			}
+		})
+	}
+}
+
+func TestMessageObserverCreatesRootSpanLinkedToHandshake(t *testing.T) {
+	telemetry, recorder := testRelayTelemetry(t)
+
+	relay := engine.NewRelay()
+	relay.OnMessage = telemetry.messageObserver
+
+	server := httptest.NewServer(telemetry.httpMiddleware(relay))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket.Dial() error = %v", err)
+	}
+	t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`["COUNT","sub",{"kinds":[1]}]`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if _, message, err := conn.Read(ctx); err != nil {
+		t.Fatalf("Read() error = %v", err)
+	} else if !strings.HasPrefix(string(message), `["CLOSED"`) {
+		t.Fatalf("response = %s, want CLOSED", message)
+	}
+
+	countSpan := waitForEndedSpan(t, recorder, "nostr.count")
+	if countSpan.Parent().IsValid() {
+		t.Error("message span has a parent, want a root span")
+	}
+	if countSpan.SpanKind() != oteltrace.SpanKindServer {
+		t.Errorf("message span kind = %v, want server", countSpan.SpanKind())
+	}
+	if value, ok := attributeValue(countSpan, "nostr.message.type"); !ok || value.AsString() != "count" {
+		t.Errorf("nostr.message.type = %v (present=%v), want count", value.AsString(), ok)
+	}
+	if value, ok := attributeValue(countSpan, "nostr.outcome"); !ok || value.AsString() != "unsupported" {
+		t.Errorf("nostr.outcome = %v (present=%v), want unsupported", value.AsString(), ok)
+	}
+	if value, ok := attributeValue(countSpan, "nostr.filter.kinds_count_bucket"); !ok || value.AsString() != "1" {
+		t.Errorf("nostr.filter.kinds_count_bucket = %v (present=%v), want 1", value.AsString(), ok)
+	}
+	if value, ok := attributeValue(countSpan, "nostr.connection.id"); !ok || len(value.AsString()) != 16 {
+		t.Errorf("nostr.connection.id = %q (present=%v), want an 8-byte hex challenge", value.AsString(), ok)
+	}
+	if countSpan.Status().Code != codes.Error {
+		t.Errorf("message span status = %v, want error", countSpan.Status().Code)
+	}
+
+	handshakeSpan := waitForEndedSpan(t, recorder, "http.request")
+	if value, ok := attributeValue(handshakeSpan, "nostr.websocket"); !ok || !value.AsBool() {
+		t.Error("handshake span is missing nostr.websocket=true")
+	}
+	if _, ok := attributeValue(handshakeSpan, "http.response.status_code"); ok {
+		t.Error("hijacked websocket handshake recorded http.response.status_code")
+	}
+
+	links := countSpan.Links()
+	if len(links) != 1 {
+		t.Fatalf("message span links = %d, want 1", len(links))
+	}
+	linked := links[0].SpanContext
+	handshake := handshakeSpan.SpanContext()
+	if linked.TraceID() != handshake.TraceID() || linked.SpanID() != handshake.SpanID() {
+		t.Error("message span is not linked to the handshake span")
+	}
+
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`["CLOSE","sub"]`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	closeSpan := waitForEndedSpan(t, recorder, "nostr.close")
+	if _, ok := attributeValue(closeSpan, "nostr.outcome"); ok {
+		t.Error("successful message span recorded nostr.outcome")
+	}
+	if closeSpan.Status().Code != codes.Unset {
+		t.Errorf("successful message span status = %v, want unset", closeSpan.Status().Code)
+	}
+	if value, ok := attributeValue(closeSpan, "nostr.message.type"); !ok || value.AsString() != "close" {
+		t.Errorf("nostr.message.type = %v (present=%v), want close", value.AsString(), ok)
+	}
+}
+
+func waitForEndedSpan(t *testing.T, recorder *tracetest.SpanRecorder, name string) trace.ReadOnlySpan {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, span := range recorder.Ended() {
+			if span.Name() == name {
+				return span
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("span %q was not ended", name)
+	return nil
+}
+
+func attributeValue(span trace.ReadOnlySpan, key string) (attribute.Value, bool) {
+	for _, attr := range span.Attributes() {
+		if string(attr.Key) == key {
+			return attr.Value, true
+		}
+	}
+	return attribute.Value{}, false
 }
