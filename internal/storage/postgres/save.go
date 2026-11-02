@@ -8,23 +8,24 @@ import (
 	"github.com/azuki774/khatru-redbean/internal/storage"
 )
 
-func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) error {
+func (b *PostgresBackend) SaveEvent(ctx context.Context, evt *nostr.Event) (storage.WriteOutcome, error) {
 	sql, params, _ := saveEventSql(evt)
 	res, err := b.DB.ExecContext(ctx, sql, params...)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	nr, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if nr == 0 {
-		return storage.ErrDupEvent
+		// ON CONFLICT DO NOTHING: the event ID already exists.
+		return storage.WriteDuplicate, nil
 	}
 
-	return nil
+	return storage.WriteStored, nil
 }
 
 func (b *PostgresBackend) BeforeSave(ctx context.Context, evt *nostr.Event) {

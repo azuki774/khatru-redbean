@@ -85,8 +85,11 @@ make clean
 | `PUBKEY` | ❌ | リレー管理者の公開鍵（NIP-11で表示） | `npub1...` |
 | `CONTACT` | ❌ | リレー管理者への連絡先（NIP-11で表示） | `admin@example.com` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | ❌ | OpenTelemetry の OTLP/HTTP endpoint | `10.254.0.10:4318` |
+| `OTEL_RESOURCE_ATTRIBUTES` | ❌ | trace と metric で共有する Resource 属性（カンマ区切り） | `deployment.environment.name=production` |
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` を設定しない場合、Telemetry は `10.254.0.10:4318` へ OTLP/HTTP で送信されます。通信には TLS を使用しません。
+
+`OTEL_RESOURCE_ATTRIBUTES` は trace と metric の両方で同じ Resource として送信されます。`service.name` は常に `khatru-redbean`、`service.version` はビルド時のバージョンで明示的に設定され、環境変数で上書きされません。`service.instance.id` を指定しない場合、起動するプロセス（Provider）ごとに `crypto/rand` で 128 bit の ID を生成するため、複数プロセスの Resource が区別できます。属性値はそのまま外部へ送信されるため、トークンや接続文字列などの秘密情報は指定しないでください。ホスト名やホスト ID はアプリ側では追加しません。
 
 ### 環境変数の設定例
 
@@ -96,18 +99,38 @@ export COUNTRY_ONLY="JP"
 export DESCRIPTION="My Nostr Relay"
 export PUBKEY="npub1..."
 export CONTACT="admin@example.com"
+export OTEL_RESOURCE_ATTRIBUTES="deployment.environment.name=production"
 ```
 
 ## Telemetry
 
-OpenTelemetry では、WebSocket メッセージごとにメッセージ Span を root とする 1 本のトレースを送信します。メッセージの種類に応じて `nostr.event`、`nostr.req`、`nostr.count`、`nostr.auth`、`nostr.close` の Span が作られます。parse に失敗した場合は Span 名が `ws.parse`、それ以外の種別（NOTICE など通常クライアントから送られないもの）は `ws.message` になります。メッセージ処理に由来するポリシー判定（`nostr.policy.*`）と DB 操作（`postgres.*`）の Span が同じトレースに親子関係で連なります。NIP-40 期限チェックなどの定期処理は独立したトレースになります。`nostr.req` Span は初期配信の完了（EOSE）までの時間を計測します。
+OpenTelemetry では、WebSocket メッセージごとにメッセージ Span を root とする 1 本のトレースを送信します。メッセージの種類に応じて `nostr.event`、`nostr.req`、`nostr.count`、`nostr.auth`、`nostr.close`、`nostr.negentropy` の Span が作られます。parse に失敗した場合は `ws.parse`、それ以外（NOTICE など、通常クライアントから送られないもの）は `ws.message` になります。
 
-HTTP リクエスト（NIP-11 など）と WebSocket ハンドシェイクには `http.request` Span を送信します（WebSocket の場合は属性 `nostr.websocket=true`）。メッセージ Span はハンドシェイクの Span へ link で関連付けられ、属性 `nostr.connection.id` で接続単位の相関が取れます。メッセージ Span には `nostr.message.type` と処理結果 `nostr.outcome`（`blocked` / `error` / `auth-required` / `invalid` / `mute` / `unsupported`。正常時は省略）が付きます。
+メッセージ Span は `ReadMessage` 成功直後、parse と goroutine 起動前に記録した受信時刻を開始時刻とし、応答の書き込みが完了した時刻で終了します。応答を書かない `CLOSE` と negentropy の close は、購読解除などのローカル処理が完了した時刻で終了します。クライアントへの到達やクライアント側の処理時間は含みません。メッセージ処理に由来するポリシー判定（`nostr.policy.*`）と DB 操作（`postgres.*`）の Span が同じトレースに親子関係で連なります。NIP-40 期限チェックなどの定期処理は独立したトレースになります。
 
-DB 検索（`postgres.query_events`）では、Span と `db.client.operation.duration` はデータベースのスキャン完了までの時間を表し、クライアントへのイベント配信待ちは含みません。保存・集計などの操作では、Span とヒストグラムは操作完了までの時間を計測します。
+`EVENT` では、同じ受信時刻を開始時刻とする `nostr.event.persist` Span をメッセージ Span の子として作ります。この Span は validation・ポリシー判定・保存処理を包含し、ストレージパイプラインが完了した時点（ブロードキャストと `OK` の書き込みより前）で終了します。完了後のブロードキャストとレスポンスはメッセージ root の配下に戻ります。`nostr.event.persist` には `nostr.persistence.outcome` が付き、`stored`（新規行の保存。置換成功を含む）、`duplicate`、`superseded`、`not_stored`、`not_attempted`（validation・ポリシー拒否など）、`ephemeral`、`error`、`canceled` のいずれかになります。
+
+kind 5 の削除要求では、対象の削除に失敗すると `error` または `canceled`、著者やポリシーによる拒否は `not_attempted` になります。削除処理がエラーなく終了した後の結果は、削除要求イベント自体の保存結果です。対象行を削除した件数は、この保存ヒストグラムには数えません。
+
+HTTP リクエスト（NIP-11 など）と WebSocket ハンドシェイクには `http.request` Span を送信します（WebSocket の場合は属性 `nostr.websocket=true`）。メッセージ Span はハンドシェイクの Span へ link で関連付けられ、属性 `nostr.connection.id` で接続単位の相関が取れます。メッセージ Span には `nostr.message.type` と処理結果 `nostr.outcome`（`ok` / `blocked` / `error` / `auth-required` / `invalid` / `mute` / `unsupported` / `write_error` / `canceled`）が付きます。未知の値は `error` に正規化され、任意のエラー文字列は属性に入りません。レスポンスの書き込みに失敗したメッセージは `ok` になりません。保存自体は成功してレスポンスだけ失敗した場合、`nostr.event.persist` と保存ヒストグラムには `stored` が残り、メッセージ側は `write_error` になります。既に `blocked` などの結果がある場合は、書き込みに失敗してもその分類を維持します。ストレージエラーやキャンセルも `ok` として扱いません。
+
+クライアントへの `OK true` とメッセージの `nostr.outcome=ok` は、新しい行が保存されたことを意味しません。`duplicate`、`superseded`、`not_stored`、待受のある `ephemeral` でも応答は成功になります。保存されたかどうかは `nostr.persistence.outcome=stored`、または `nostr.relay.event.persist.duration` の件数で判断してください。
+
+DB 検索（`postgres.query_events`）では、Span と `db.client.operation.duration` はデータベースのスキャン完了までの時間を表し、クライアントへのイベント配信待ちは含みません。保存・集計などの操作では、Span とヒストグラムは操作完了までの時間を計測します。いずれもコネクションプール待ちや DB のロック待ちなど、実際の DB 呼び出しにかかった時間を含みます。`replace_event` はプロセス内の置換用 mutex 待ちも含みます。`save_event` / `replace_event` の Span には実際の書き込み結果 `nostr.persistence.outcome` が付き、`duplicate`、`superseded`、`not_stored` はエラーではありません。`nostr.relay.db.operations` と `db.client.operation.duration` は従来どおり DB 操作単位で、エラー時のみ `error.type` を持ちます。
+
+メッセージと保存のレイテンシは、trace sampling とは独立した直接の Float64 ヒストグラムとして送信します。直接記録するため、spanmetrics の追加は不要です。exemplar は計測に渡す Span コンテキストを使い、既定の設定では sampled な trace/span ID がバケットあたり最大 1 件付くことがあります。全サンプルに付くわけではありません。このプロセスは trace を常に sample しますが、exemplar の保存・表示には Collector と backend 側の対応も必要です。
+
+- `nostr.relay.message.duration`（unit `s`）: 受信時刻から処理完了（応答の書き込み完了、または `CLOSE` / negentropy close のローカル処理完了）までのサーバー側レイテンシ。1 メッセージにつき 1 回だけ記録します。explicit boundaries は `0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` 秒です。属性は `nostr.message.type` と `nostr.outcome`。`EVENT` では `nostr.event.class` と、パイプライン完了後の `nostr.persistence.outcome` も付きます。フィルタ形状やイベント ID などの高カーディナリティ属性はコピーしません。
+- `nostr.relay.event.persist.duration`（unit `s`）: 受信時刻からストレージパイプライン完了までのサーバー側レイテンシ。同じ boundaries を使い、`nostr.persistence.outcome=stored` のサンプルだけを記録します。属性は `nostr.event.class` と `nostr.persistence.outcome=stored`。`duplicate`、`superseded`、`not_stored`、`not_attempted`、`ephemeral`、`error`、`canceled` はヒストグラムに含めず、`nostr.event.persist` Span と `nostr.relay.message.duration` の属性で確認します。このヒストグラムの件数は、実際に行が保存されたイベントの件数であり、保存されなかったイベントは含みません。
+
+`nostr.message.type` の値は `event` / `req` / `count` / `auth` / `close` / `negentropy` / `parse` / `message` です。`nostr.event.class` の値は `regular` / `replaceable` / `addressable` / `ephemeral` / `deletion` です。
+
+これらのレイテンシはサーバーが受信してからレスポンスを書き終えるまで、または保存処理が完了するまでの時間で、クライアントとサーバー間のネットワーク RTT やクライアント側の処理時間は含みません。`REQ` の通常経路は初期結果と `EOSE` の書き込みまでです。拒否された `REQ` は `EOSE` を待たず、拒否応答の書き込みで終了します。検索や集計に失敗した `REQ` / `COUNT` は `nostr.outcome=error` になり、`ok` にはなりません。ライブ購読の継続時間や、最初のイベントだけの時間は計測しません。
 
 Span に加えて、接続ライフサイクルと Go ランタイムの Metrics も送信します。Metrics には以下が含まれます。
 
+- メッセージ処理時間ヒストグラム: `nostr.relay.message.duration`（unit `s`）
+- イベント保存時間ヒストグラム（保存成功のみ）: `nostr.relay.event.persist.duration`（unit `s`）
 - DB 操作の回数・所要時間ヒストグラム: `db.client.operation.duration`、`nostr.relay.db.operations`
 - ポリシー判定回数: `nostr.relay.policy.decisions`
 - 接続数（アクティブ接続のゲージ）: `nostr.relay.connections`
@@ -116,7 +139,9 @@ Span に加えて、接続ライフサイクルと Go ランタイムの Metrics
 - 接続試行の回数（現行実装はすべての接続試行を数えます）: `nostr.relay.connection.rejected`
 - Go ランタイム（メモリ使用量・goroutine 数など）: `go.*`（例: `go.goroutine.count`、`go.memory.used`）
 
-イベント ID、公開鍵、本文、タグ値、検索語、IP は Telemetry 属性に含めません。`nostr.outcome` には前述の固定ラベルのみを使用します。
+イベント ID、公開鍵、本文、タグ値、検索語、サブスクリプション ID、IP は新しい Metric 属性に含めません。`nostr.outcome` と `nostr.persistence.outcome` には前述の固定ラベルのみを使用します。メッセージ Span には従来どおり接続 ID とフィルタ形状のバケット属性が付きますが、これは Span のみで、レイテンシ Metric にはコピーしません。
+
+このリポジトリが提供するのはアプリケーション側の Span・Metric・Resource 属性です。OTel Collector でのラベル変換、ダッシュボード、アラート、exemplar の可視化設定はインフラ側の設定であり、この変更には含まれません。Collector や backend で未設定の場合、ここで説明した属性や exemplar はそのままでは表示されない場合があります。
 
 ## 使い方
 

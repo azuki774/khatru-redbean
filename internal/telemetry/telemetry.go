@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"sync"
@@ -16,7 +18,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
-const defaultEndpoint = "10.254.0.10:4318"
+const (
+	defaultEndpoint = "10.254.0.10:4318"
+	serviceName     = "khatru-redbean"
+)
 
 var runtimeMetricsStarted sync.Once
 
@@ -37,6 +42,49 @@ func NewProvider(ctx context.Context, version string) (*Provider, error) {
 	return newProvider(ctx, endpoint(), version)
 }
 
+// newResource builds the Resource shared by the trace and metric providers.
+// OTEL_RESOURCE_ATTRIBUTES supplies deployment attributes such as
+// deployment.environment.name and an optional service.instance.id. The relay
+// identity (service.name and service.version) is always explicit so an
+// environment file cannot rename the service.
+func newResource(ctx context.Context, version string) (*resource.Resource, error) {
+	res, err := resource.New(ctx,
+		resource.WithFromEnv(),
+		resource.WithAttributes(
+			attribute.String("service.name", serviceName),
+			attribute.String("service.version", version),
+		),
+	)
+	if err != nil {
+		// invalid OTEL_RESOURCE_ATTRIBUTES entries are dropped by the SDK; a
+		// partial-resource error must not stop the relay from starting.
+		if res == nil || errors.Is(err, resource.ErrSchemaURLConflict) || !errors.Is(err, resource.ErrPartialResource) {
+			return nil, err
+		}
+	}
+
+	instanceKey := attribute.Key("service.instance.id")
+	if value, ok := res.Set().Value(instanceKey); ok && value.AsString() != "" {
+		return res, nil
+	}
+
+	instanceID, err := generateInstanceID()
+	if err != nil {
+		return nil, err
+	}
+	return resource.Merge(res, resource.NewSchemaless(attribute.String(string(instanceKey), instanceID)))
+}
+
+// generateInstanceID creates a random 128-bit identifier so separate provider
+// instances (and therefore processes) are distinguishable by default.
+func generateInstanceID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
 func newProvider(ctx context.Context, endpoint, version string) (*Provider, error) {
 	traceExporter, err := otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpoint(endpoint),
@@ -54,10 +102,10 @@ func newProvider(ctx context.Context, endpoint, version string) (*Provider, erro
 		return nil, err
 	}
 
-	res := resource.NewWithAttributes("",
-		attribute.String("service.name", "khatru-redbean"),
-		attribute.String("service.version", version),
-	)
+	res, err := newResource(ctx, version)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Provider{
 		TracerProvider: trace.NewTracerProvider(

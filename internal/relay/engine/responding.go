@@ -39,7 +39,10 @@ func (rl *Relay) handleRequest(ctx context.Context, id string, eose *sync.WaitGr
 	for _, query := range rl.QueryEvents {
 		ch, err := query(ctx, filter)
 		if err != nil {
-			ws.WriteJSON(nostr.NoticeEnvelope(err.Error()))
+			// the stored events could not be loaded: surface it on the message
+			// outcome instead of reporting a successful REQ
+			markQueryFailure(ctx)
+			writeResponse(ctx, ws, nostr.NoticeEnvelope(err.Error()))
 			eose.Done()
 			continue
 		} else if ch == nil {
@@ -52,7 +55,7 @@ func (rl *Relay) handleRequest(ctx context.Context, id string, eose *sync.WaitGr
 				for _, ovw := range rl.OverwriteResponseEvent {
 					ovw(ctx, event)
 				}
-				ws.WriteJSON(nostr.EventEnvelope{SubscriptionID: &id, Event: *event})
+				writeResponse(ctx, ws, nostr.EventEnvelope{SubscriptionID: &id, Event: *event})
 			}
 			eose.Done()
 		}(ch)
@@ -65,7 +68,7 @@ func (rl *Relay) handleCountRequest(ctx context.Context, ws *WebSocket, filter n
 	// check if we'll reject this filter
 	for _, reject := range rl.RejectCountFilter {
 		if rejecting, msg := reject(ctx, filter); rejecting {
-			ws.WriteJSON(nostr.NoticeEnvelope(msg))
+			writeResponse(ctx, ws, nostr.NoticeEnvelope(msg))
 			return 0
 		}
 	}
@@ -75,7 +78,8 @@ func (rl *Relay) handleCountRequest(ctx context.Context, ws *WebSocket, filter n
 	for _, count := range rl.CountEvents {
 		res, err := count(ctx, filter)
 		if err != nil {
-			ws.WriteJSON(nostr.NoticeEnvelope(err.Error()))
+			markQueryFailure(ctx)
+			writeResponse(ctx, ws, nostr.NoticeEnvelope(err.Error()))
 		}
 		subtotal += res
 	}
@@ -92,7 +96,7 @@ func (rl *Relay) handleCountRequestWithHLL(
 	// check if we'll reject this filter
 	for _, reject := range rl.RejectCountFilter {
 		if rejecting, msg := reject(ctx, filter); rejecting {
-			ws.WriteJSON(nostr.NoticeEnvelope(msg))
+			writeResponse(ctx, ws, nostr.NoticeEnvelope(msg))
 			return 0, nil
 		}
 	}
@@ -103,7 +107,8 @@ func (rl *Relay) handleCountRequestWithHLL(
 	for _, countHLL := range rl.CountEventsHLL {
 		res, fhll, err := countHLL(ctx, filter, offset)
 		if err != nil {
-			ws.WriteJSON(nostr.NoticeEnvelope(err.Error()))
+			markQueryFailure(ctx)
+			writeResponse(ctx, ws, nostr.NoticeEnvelope(err.Error()))
 		}
 		subtotal += res
 		if fhll != nil {

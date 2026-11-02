@@ -9,7 +9,7 @@ import (
 	"github.com/azuki774/khatru-redbean/internal/nostr"
 )
 
-func (rl *Relay) handleDeleteRequest(ctx context.Context, evt *nostr.Event) error {
+func (rl *Relay) handleDeleteRequest(ctx context.Context, evt *nostr.Event) (string, error) {
 	// event deletion -- nip09
 	for _, tag := range evt.Tags {
 		if len(tag) >= 2 {
@@ -68,7 +68,7 @@ func (rl *Relay) handleDeleteRequest(ctx context.Context, evt *nostr.Event) erro
 					// delete it
 					for _, del := range rl.DeleteEvent {
 						if err := del(ctx, target); err != nil {
-							return err
+							return persistenceOutcomeForError(err), err
 						}
 					}
 
@@ -76,7 +76,7 @@ func (rl *Relay) handleDeleteRequest(ctx context.Context, evt *nostr.Event) erro
 					rl.expirationManager.removeEvent(target.ID)
 				} else {
 					// fail and stop here
-					return fmt.Errorf("blocked: %s", msg)
+					return persistenceNotAttempted, fmt.Errorf("blocked: %s", msg)
 				}
 
 				// don't try to query this same event again
@@ -85,5 +85,5 @@ func (rl *Relay) handleDeleteRequest(ctx context.Context, evt *nostr.Event) erro
 		}
 	}
 
-	return nil
+	return persistenceNotAttempted, nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/azuki774/khatru-redbean/internal/nostr/nip11"
 	"github.com/azuki774/khatru-redbean/internal/relay/engine"
 	"github.com/azuki774/khatru-redbean/internal/relay/engine/policies"
+	"github.com/azuki774/khatru-redbean/internal/storage"
 	"github.com/azuki774/khatru-redbean/internal/storage/postgres"
 	"go.uber.org/zap"
 )
@@ -59,6 +60,7 @@ func (i *instance) Start(ctx context.Context) error {
 	relay.OnDisconnect = append(relay.OnDisconnect, telemetry.onDisconnect)
 	relay.RejectConnection = append(relay.RejectConnection, telemetry.rejectConnection)
 	relay.OnMessage = telemetry.messageObserver
+	relay.OnEventPersistence = telemetry.persistenceObserver
 
 	// A. インメモリの場合の実装
 	// SetInmemoryRelay(relay)
@@ -153,9 +155,12 @@ func SetInmemoryRelay(relay *engine.Relay) {
 
 	// set up the basic relay functions
 	relay.StoreEvent = append(relay.StoreEvent,
-		func(ctx context.Context, event *nostr.Event) error {
+		func(ctx context.Context, event *nostr.Event) (storage.WriteOutcome, error) {
+			if _, exists := store[event.ID]; exists {
+				return storage.WriteDuplicate, nil
+			}
 			store[event.ID] = event
-			return nil
+			return storage.WriteStored, nil
 		},
 	)
 	relay.QueryEvents = append(relay.QueryEvents,
@@ -204,11 +209,11 @@ func setPostgresRelay(relay *engine.Relay, databaseUrl string, telemetry *relayT
 	}
 	zap.S().Infow("database ready")
 
-	relay.StoreEvent = append(relay.StoreEvent, telemetry.eventOperation("save_event", db.SaveEvent))
+	relay.StoreEvent = append(relay.StoreEvent, telemetry.writeOperation("save_event", db.SaveEvent))
 	relay.QueryEvents = append(relay.QueryEvents, telemetry.queryOperation(db.QueryEvents))
 	relay.CountEvents = append(relay.CountEvents, telemetry.countOperation(db.CountEvents))
 	relay.DeleteEvent = append(relay.DeleteEvent, telemetry.eventOperation("delete_event", db.DeleteEvent))
-	relay.ReplaceEvent = append(relay.ReplaceEvent, telemetry.eventOperation("replace_event", db.ReplaceEvent))
+	relay.ReplaceEvent = append(relay.ReplaceEvent, telemetry.writeOperation("replace_event", db.ReplaceEvent))
 
 	return nil
 }

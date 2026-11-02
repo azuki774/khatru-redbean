@@ -22,7 +22,7 @@ github.com/fiatjaf/eventstore v0.17.5 h1:/3CRthtZmkcTM01IxEiebydM5MKYZhZcQBKMSbL
 
 - **go-nostr:** the root protocol and client package; `nip11`, `nip40`, `nip42`, `nip45`, `nip70`, `nip77`, and `nip86`; and their HyperLogLog and negentropy support packages.
 - **khatru:** the root relay implementation and `policies` package. `internal/relay/` connects the engine to application-specific policies and PostgreSQL.
-- **eventstore:** storage interfaces, shared errors and helpers, the PostgreSQL backend, and its internal support package. Other database backends are outside this implementation.
+- **eventstore:** storage interfaces and helpers, the PostgreSQL backend, and its internal support package. Other database backends are outside this implementation.
 
 See [Directory layout](directory.md) for package responsibilities and dependency boundaries.
 
@@ -31,6 +31,7 @@ See [Directory layout](directory.md) for package responsibilities and dependency
 - Imports and package names follow the local layout.
 - Error identifiers use `Err`-prefixed names, such as `nostr.ErrUnknownLabel` and `postgres.ErrTooManyIDs`. Relay context keys use a package-specific type.
 - Signature handling and JSON envelope parsing use Go implementations. The upstream cgo, Sonic, JavaScript, and debug-logging build variants are not maintained. Release builds target Linux amd64 and arm64 with `CGO_ENABLED=0`.
+- Storage writes return explicit outcomes for stored, duplicate, and superseded events; expected no-ops are not errors.
 
 Protocol encoding, event ID and signature semantics, and the PostgreSQL storage format follow the baselines above. Changes to event or filter serialization must also account for the checked-in generated JSON code.
 

@@ -137,6 +137,10 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// capture the receive time before parsing or dispatching, so message
+			// latency includes parse and scheduler time
+			receivedAt := time.Now()
+
 			if typ == websocket.PingMessage {
 				ws.WriteMessage(websocket.PongMessage, nil)
 				continue
@@ -146,13 +150,14 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 			message := unsafe.String(unsafe.SliceData(msgb), len(msgb))
 
 			// parse messages sequentially otherwise sonic breaks
-			envelope, err := smp.ParseMessage(message)
+			envelope, parseErr := smp.ParseMessage(message)
 
-			// then delegate to the goroutine
-			go func(message string) {
+			// then delegate to the goroutine, passing every per-message value
+			// explicitly so goroutines never observe another message's state
+			go func(message string, envelope any, parseErr error, receivedAt time.Time) {
 				// negentropy messages arrive as unknown-label parse errors; parse
 				// them here so the message span can be named after the envelope.
-				if err == nostr.ErrUnknownLabel && rl.Negentropy {
+				if parseErr == nostr.ErrUnknownLabel && rl.Negentropy {
 					envelope = nip77.ParseNegMessage(message)
 				}
 
@@ -163,34 +168,56 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 				// shadow the connection context so every message goroutine gets
 				// its own message-scoped context instead of racing on the outer one
-				ctx, end := ctx, func(string) {}
+				ctx, end := ctx, func(MessageResult) {}
 				if rl.OnMessage != nil {
-					ctx, end = rl.OnMessage(ctx, envelope)
+					ctx, end = rl.OnMessage(ctx, envelope, receivedAt)
 				}
-				defer func() { end(outcome) }()
+
+				obs := &messageObservation{}
+				ctx = withMessageObservation(ctx, obs)
+				defer func() { end(obs.result(outcome)) }()
 
 				if envelope == nil {
-					ws.WriteJSON(nostr.NoticeEnvelope("failed to parse envelope: " + err.Error()))
+					writeResponse(ctx, ws, nostr.NoticeEnvelope("failed to parse envelope: "+parseErr.Error()))
 					return
 				}
 
 				switch env := envelope.(type) {
 				case *nostr.EventEnvelope:
+					// finishPersistence runs the persistence lifecycle hook exactly
+					// once for this EVENT, before broadcast and before the response.
+					// It returns the root context for the later work.
+					finishPersistence := func(persistence string) {
+						if rl.OnEventPersistence == nil {
+							return
+						}
+						ctx = withMessageObservation(
+							rl.OnEventPersistence(ctx, PersistenceResult{
+								Outcome:    persistence,
+								FinishedAt: time.Now(),
+							}),
+							obs,
+						)
+					}
+
 					// check id
 					if !env.Event.CheckID() {
 						outcome = outcomeFromReason("invalid: id is computed incorrectly")
-						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "invalid: id is computed incorrectly"})
+						finishPersistence(persistenceNotAttempted)
+						writeResponse(ctx, ws, nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "invalid: id is computed incorrectly"})
 						return
 					}
 
 					// check signature
 					if ok, err := env.Event.CheckSignature(); err != nil {
 						outcome = outcomeFromReason("error: failed to verify signature")
-						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to verify signature"})
+						finishPersistence(persistenceNotAttempted)
+						writeResponse(ctx, ws, nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to verify signature"})
 						return
 					} else if !ok {
 						outcome = outcomeFromReason("invalid: signature is invalid")
-						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "invalid: signature is invalid"})
+						finishPersistence(persistenceNotAttempted)
+						writeResponse(ctx, ws, nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "invalid: signature is invalid"})
 						return
 					}
 
@@ -199,8 +226,9 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						authed := GetAuthed(ctx)
 						if authed == "" {
 							outcome = outcomeFromReason("auth-required: must be published by authenticated event author")
+							finishPersistence(persistenceNotAttempted)
 							RequestAuth(ctx)
-							ws.WriteJSON(nostr.OKEnvelope{
+							writeResponse(ctx, ws, nostr.OKEnvelope{
 								EventID: env.Event.ID,
 								OK:      false,
 								Reason:  "auth-required: must be published by authenticated event author",
@@ -208,7 +236,8 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 							return
 						} else if authed != env.Event.PubKey {
 							outcome = outcomeFromReason("blocked: must be published by event author")
-							ws.WriteJSON(nostr.OKEnvelope{
+							finishPersistence(persistenceNotAttempted)
+							writeResponse(ctx, ws, nostr.OKEnvelope{
 								EventID: env.Event.ID,
 								OK:      false,
 								Reason:  "blocked: must be published by event author",
@@ -217,7 +246,8 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						}
 					} else if nip70.HasEmbeddedProtected(env.Event) {
 						outcome = outcomeFromReason("blocked: can't repost nip70 protected")
-						ws.WriteJSON(nostr.OKEnvelope{
+						finishPersistence(persistenceNotAttempted)
+						writeResponse(ctx, ws, nostr.OKEnvelope{
 							EventID: env.Event.ID,
 							OK:      false,
 							Reason:  "blocked: can't repost nip70 protected",
@@ -233,21 +263,28 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 					var ok bool
 					var writeErr error
 					var skipBroadcast bool
+					persistence := persistenceNotAttempted
 
 					if env.Event.Kind == 5 {
-						// this always returns "blocked: " whenever it returns an error
-						writeErr = srl.handleDeleteRequest(ctx, &env.Event)
+						persistence, writeErr = srl.handleDeleteRequest(ctx, &env.Event)
 					}
 
 					if writeErr == nil {
 						if nostr.IsEphemeralKind(env.Event.Kind) {
 							// this will also always return a prefixed reason
 							writeErr = srl.handleEphemeral(ctx, &env.Event)
+							if writeErr == nil {
+								persistence = persistenceEphemeral
+							}
 						} else {
 							// this will also always return a prefixed reason
-							skipBroadcast, writeErr = srl.handleNormal(ctx, &env.Event)
+							persistence, skipBroadcast, writeErr = srl.handleNormal(ctx, &env.Event)
 						}
 					}
+
+					// persistence is finished before the event is broadcast or the
+					// response is written, and exactly once.
+					finishPersistence(persistence)
 
 					var reason string
 					if writeErr == nil {
@@ -277,14 +314,16 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 					}
 					if ok {
 						outcome = "ok"
+					} else if persistence == persistenceCanceled {
+						outcome = messageOutcomeCanceled
 					} else {
 						outcome = outcomeFromReason(reason)
 					}
-					ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: ok, Reason: reason})
+					writeResponse(ctx, ws, nostr.OKEnvelope{EventID: env.Event.ID, OK: ok, Reason: reason})
 				case *nostr.CountEnvelope:
 					if rl.CountEvents == nil && rl.CountEventsHLL == nil {
 						outcome = "unsupported"
-						ws.WriteJSON(nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: "unsupported: this relay does not support NIP-45"})
+						writeResponse(ctx, ws, nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: "unsupported: this relay does not support NIP-45"})
 						return
 					}
 
@@ -310,7 +349,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						resp.HyperLogLog = hll.GetRegisters()
 					}
 
-					ws.WriteJSON(resp)
+					writeResponse(ctx, ws, resp)
 
 				case *nostr.ReqEnvelope:
 					eose := sync.WaitGroup{}
@@ -340,7 +379,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 							if strings.HasPrefix(reason, "auth-required:") {
 								RequestAuth(ctx)
 							}
-							ws.WriteJSON(nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: reason})
+							writeResponse(ctx, ws, nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: reason})
 							cancelReqCtx(errors.New("filter rejected"))
 							return
 						} else {
@@ -350,8 +389,10 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 					// when all events have been loaded from databases and dispatched we can fire the EOSE message
 					eose.Wait()
-					ws.WriteJSON(nostr.EOSEEnvelope(env.SubscriptionID))
+					writeResponse(ctx, ws, nostr.EOSEEnvelope(env.SubscriptionID))
 				case *nostr.CloseEnvelope:
+					// CLOSE has no response envelope: the message ends when the
+					// subscription removal completes, not on a network write.
 					id := string(*env)
 					rl.removeListenerId(ws, id)
 				case *nostr.AuthEnvelope:
@@ -364,10 +405,10 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 							ws.Authed = nil
 						}
 						ws.authLock.Unlock()
-						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: true})
+						writeResponse(ctx, ws, nostr.OKEnvelope{EventID: env.Event.ID, OK: true})
 					} else {
 						outcome = "invalid"
-						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to authenticate"})
+						writeResponse(ctx, ws, nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to authenticate"})
 					}
 				case *nip77.OpenEnvelope:
 					srl := rl
@@ -385,7 +426,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						if strings.HasPrefix(reason, "auth-required:") {
 							RequestAuth(ctx)
 						}
-						ws.WriteJSON(nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: reason})
+						writeResponse(ctx, ws, nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: reason})
 						return
 					}
 
@@ -393,10 +434,10 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 					neg := negentropy.New(vec, 1024*1024)
 					out, err := neg.Reconcile(env.Message)
 					if err != nil {
-						ws.WriteJSON(nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: err.Error()})
+						writeResponse(ctx, ws, nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: err.Error()})
 						return
 					}
-					ws.WriteJSON(nip77.MessageEnvelope{SubscriptionID: env.SubscriptionID, Message: out})
+					writeResponse(ctx, ws, nip77.MessageEnvelope{SubscriptionID: env.SubscriptionID, Message: out})
 
 					// if the message is not empty that means we'll probably have more reconciliation sessions, so store this
 					if out != "" {
@@ -417,17 +458,17 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 					negSession, ok := ws.negentropySessions.Load(env.SubscriptionID)
 					if !ok {
 						// bad luck, your request was destroyed
-						ws.WriteJSON(nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: "CLOSED"})
+						writeResponse(ctx, ws, nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: "CLOSED"})
 						return
 					}
 					// reconcile to get the next message and return it
 					out, err := negSession.neg.Reconcile(env.Message)
 					if err != nil {
-						ws.WriteJSON(nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: err.Error()})
+						writeResponse(ctx, ws, nip77.ErrorEnvelope{SubscriptionID: env.SubscriptionID, Reason: err.Error()})
 						ws.negentropySessions.Delete(env.SubscriptionID)
 						return
 					}
-					ws.WriteJSON(nip77.MessageEnvelope{SubscriptionID: env.SubscriptionID, Message: out})
+					writeResponse(ctx, ws, nip77.MessageEnvelope{SubscriptionID: env.SubscriptionID, Message: out})
 
 					// if there is more reconciliation to do, postpone this
 					if out != "" {
@@ -439,7 +480,7 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 				case *nip77.CloseEnvelope:
 					ws.negentropySessions.Delete(env.SubscriptionID)
 				}
-			}(message)
+			}(message, envelope, parseErr, receivedAt)
 		}
 	}()
 
