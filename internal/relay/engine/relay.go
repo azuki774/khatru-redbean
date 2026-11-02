@@ -86,9 +86,8 @@ type Relay struct {
 
 	// OnEventPersistence is invoked exactly once per EVENT message, after the
 	// storage pipeline finishes and before the event is broadcast or the
-	// response is written. It returns the context later work should use, so
-	// broadcast and response are not nested under an ended persistence span.
-	OnEventPersistence func(ctx context.Context, result PersistenceResult) context.Context
+	// response is written.
+	OnEventPersistence func(ctx context.Context, result PersistenceResult)
 
 	// these are used when this relays acts as a router
 	routes                []Route

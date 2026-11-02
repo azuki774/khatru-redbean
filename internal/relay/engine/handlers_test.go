@@ -446,11 +446,10 @@ func TestOnEventPersistenceBeforeBroadcast(t *testing.T) {
 
 	_, server, ctx := startTestRelay(t, func(relay *Relay) {
 		relay.OnMessage = hook.observe
-		relay.OnEventPersistence = func(ctx context.Context, result PersistenceResult) context.Context {
+		relay.OnEventPersistence = func(_ context.Context, result PersistenceResult) {
 			mu.Lock()
 			order = append(order, "persist:"+result.Outcome)
 			mu.Unlock()
-			return ctx
 		}
 		relay.StoreEvent = append(relay.StoreEvent, func(context.Context, *nostr.Event) (storage.WriteOutcome, error) {
 			return storage.WriteStored, nil
@@ -557,9 +556,8 @@ func newPersistenceHook() *persistenceHook {
 	return &persistenceHook{calls: make(chan PersistenceResult, 16)}
 }
 
-func (h *persistenceHook) observe(ctx context.Context, result PersistenceResult) context.Context {
+func (h *persistenceHook) observe(_ context.Context, result PersistenceResult) {
 	h.calls <- result
-	return ctx
 }
 
 func (h *persistenceHook) next(t *testing.T) PersistenceResult {

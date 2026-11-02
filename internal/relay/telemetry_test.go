@@ -33,18 +33,10 @@ func TestMessageAndPersistenceLatencyShareReceiveTimestamp(t *testing.T) {
 	}, receivedAt)
 
 	persistenceFinishedAt := receivedAt.Add(120 * time.Millisecond)
-	rootCtx := telemetry.persistenceObserver(processingCtx, engine.PersistenceResult{
+	telemetry.persistenceObserver(processingCtx, engine.PersistenceResult{
 		Outcome:    "stored",
 		FinishedAt: persistenceFinishedAt,
 	})
-	rootSpanContext := oteltrace.SpanFromContext(rootCtx).SpanContext()
-	if !rootSpanContext.IsValid() {
-		t.Fatal("persistence callback did not return the message root context")
-	}
-	persistenceSpanContext := oteltrace.SpanFromContext(processingCtx).SpanContext()
-	if persistenceSpanContext.SpanID() == rootSpanContext.SpanID() {
-		t.Fatal("persistence callback received the message root instead of the persistence span context")
-	}
 
 	// duplicate lifecycle callbacks must not record extra metrics or end spans twice
 	telemetry.persistenceObserver(processingCtx, engine.PersistenceResult{
@@ -57,13 +49,8 @@ func TestMessageAndPersistenceLatencyShareReceiveTimestamp(t *testing.T) {
 	end(engine.MessageResult{Outcome: "error", FinishedAt: finishedAt.Add(time.Second)})
 
 	messageSpan := waitForEndedSpan(t, recorder, "nostr.event")
-	persistenceSpan := waitForEndedSpan(t, recorder, "nostr.event.persist")
-	if len(recorder.Ended()) != 2 {
-		t.Fatalf("ended spans = %d, want exactly message and persistence spans", len(recorder.Ended()))
-	}
-
-	if messageSpan.SpanContext().SpanID() != rootSpanContext.SpanID() {
-		t.Error("persistence callback returned a context unrelated to the message root span")
+	if len(recorder.Ended()) != 1 {
+		t.Fatalf("ended spans = %d, want only the message span", len(recorder.Ended()))
 	}
 	if !messageSpan.StartTime().Equal(receivedAt) {
 		t.Errorf("message span start = %v, want %v", messageSpan.StartTime(), receivedAt)
@@ -71,15 +58,7 @@ func TestMessageAndPersistenceLatencyShareReceiveTimestamp(t *testing.T) {
 	if !messageSpan.EndTime().Equal(finishedAt) {
 		t.Errorf("message span end = %v, want %v", messageSpan.EndTime(), finishedAt)
 	}
-	if !persistenceSpan.StartTime().Equal(receivedAt) {
-		t.Errorf("persistence span start = %v, want %v", persistenceSpan.StartTime(), receivedAt)
-	}
-	if !persistenceSpan.EndTime().Equal(persistenceFinishedAt) {
-		t.Errorf("persistence span end = %v, want %v", persistenceSpan.EndTime(), persistenceFinishedAt)
-	}
-	if persistenceSpan.Parent().SpanID() != messageSpan.SpanContext().SpanID() {
-		t.Error("persistence span is not a child of the message span")
-	}
+	assertPersistenceEvent(t, messageSpan, "stored", persistenceFinishedAt)
 	if value, ok := attributeValue(messageSpan, "nostr.outcome"); !ok || value.AsString() != "ok" {
 		t.Errorf("nostr.outcome = %v (present=%v), want explicit ok", value.AsString(), ok)
 	}
@@ -122,14 +101,13 @@ func TestMessageAndPersistenceLatencyShareReceiveTimestamp(t *testing.T) {
 	if len(persistencePoint.Exemplars) > 0 {
 		exemplar := persistencePoint.Exemplars[0]
 		messageSpanContext := messageSpan.SpanContext()
-		persistenceSpanContext := persistenceSpan.SpanContext()
 		messageTraceID := messageSpanContext.TraceID()
-		persistenceSpanID := persistenceSpanContext.SpanID()
+		messageSpanID := messageSpanContext.SpanID()
 		if !bytes.Equal(exemplar.TraceID, messageTraceID[:]) {
 			t.Error("persistence histogram exemplar does not use the message trace")
 		}
-		if !bytes.Equal(exemplar.SpanID, persistenceSpanID[:]) {
-			t.Error("persistence histogram exemplar does not use the persistence span")
+		if !bytes.Equal(exemplar.SpanID, messageSpanID[:]) {
+			t.Error("persistence histogram exemplar does not use the message span")
 		}
 	}
 }
@@ -166,17 +144,16 @@ func TestStoredPersistenceSurvivesResponseWriteFailure(t *testing.T) {
 
 func TestPersistenceHistogramOnlyRecordsStoredEvents(t *testing.T) {
 	tests := []struct {
-		name                 string
-		persistenceOutcome   string
-		wantMessageOutcome   string
-		wantPersistenceError bool
+		name               string
+		persistenceOutcome string
+		wantMessageOutcome string
 	}{
 		{name: "duplicate", persistenceOutcome: "duplicate", wantMessageOutcome: "ok"},
 		{name: "superseded", persistenceOutcome: "superseded", wantMessageOutcome: "ok"},
 		{name: "not stored", persistenceOutcome: "not_stored", wantMessageOutcome: "ok"},
 		{name: "not attempted", persistenceOutcome: "not_attempted", wantMessageOutcome: "invalid"},
 		{name: "ephemeral", persistenceOutcome: "ephemeral", wantMessageOutcome: "ok"},
-		{name: "error", persistenceOutcome: "error", wantMessageOutcome: "error", wantPersistenceError: true},
+		{name: "error", persistenceOutcome: "error", wantMessageOutcome: "error"},
 		{name: "canceled", persistenceOutcome: "canceled", wantMessageOutcome: "canceled"},
 	}
 
@@ -194,19 +171,8 @@ func TestPersistenceHistogramOnlyRecordsStoredEvents(t *testing.T) {
 			})
 			end(engine.MessageResult{Outcome: tt.wantMessageOutcome, FinishedAt: receivedAt.Add(100 * time.Millisecond)})
 
-			persistenceSpan := waitForEndedSpan(t, recorder, "nostr.event.persist")
-			if value, ok := attributeValue(persistenceSpan, "nostr.persistence.outcome"); !ok || value.AsString() != tt.persistenceOutcome {
-				t.Errorf("persistence span outcome = %v (present=%v), want %q", value.AsString(), ok, tt.persistenceOutcome)
-			}
-			if tt.wantPersistenceError {
-				if persistenceSpan.Status().Code != codes.Error {
-					t.Error("failed persistence span has no error status")
-				}
-			} else if persistenceSpan.Status().Code == codes.Error {
-				t.Errorf("persistence outcome %q recorded an error status", tt.persistenceOutcome)
-			}
-
 			messageSpan := waitForEndedSpan(t, recorder, "nostr.event")
+			assertPersistenceEvent(t, messageSpan, tt.persistenceOutcome, receivedAt.Add(75*time.Millisecond))
 			if value, ok := attributeValue(messageSpan, "nostr.outcome"); !ok || value.AsString() != tt.wantMessageOutcome {
 				t.Errorf("message outcome = %v (present=%v), want %q", value.AsString(), ok, tt.wantMessageOutcome)
 			}
@@ -282,7 +248,8 @@ func TestStoredReplacementRecordsPersistenceHistogram(t *testing.T) {
 			assertMetricAttribute(t, persistencePoint.Attributes, "nostr.event.class", tt.wantClass)
 			messagePoint := singleHistogramDataPoint(t, rm, "nostr.relay.message.duration")
 			assertMetricAttribute(t, messagePoint.Attributes, "nostr.event.class", tt.wantClass)
-			waitForEndedSpan(t, recorder, "nostr.event.persist")
+			messageSpan := waitForEndedSpan(t, recorder, "nostr.event")
+			assertPersistenceEvent(t, messageSpan, "stored", receivedAt.Add(45*time.Millisecond))
 		})
 	}
 }
@@ -300,10 +267,8 @@ func TestPersistenceOutcomeNormalizesUnknownValue(t *testing.T) {
 	})
 	end(engine.MessageResult{Outcome: "error", FinishedAt: receivedAt.Add(20 * time.Millisecond)})
 
-	persistenceSpan := waitForEndedSpan(t, recorder, "nostr.event.persist")
-	if value, ok := attributeValue(persistenceSpan, "nostr.persistence.outcome"); !ok || value.AsString() != "error" {
-		t.Errorf("persistence span outcome = %v (present=%v), want error", value.AsString(), ok)
-	}
+	messageSpan := waitForEndedSpan(t, recorder, "nostr.event")
+	assertPersistenceEvent(t, messageSpan, "error", receivedAt.Add(10*time.Millisecond))
 	rm := collectMetrics(t, reader)
 	messagePoint := singleHistogramDataPoint(t, rm, "nostr.relay.message.duration")
 	assertMetricAttribute(t, messagePoint.Attributes, "nostr.persistence.outcome", "error")
@@ -913,6 +878,21 @@ func TestMessageObserverCreatesRootSpanLinkedToHandshake(t *testing.T) {
 	if value, ok := attributeValue(closeSpan, "nostr.message.type"); !ok || value.AsString() != "close" {
 		t.Errorf("nostr.message.type = %v (present=%v), want close", value.AsString(), ok)
 	}
+}
+
+func assertPersistenceEvent(t *testing.T, span trace.ReadOnlySpan, outcome string, finishedAt time.Time) {
+	t.Helper()
+
+	events := span.Events()
+	if len(events) != 1 || events[0].Name != "nostr.persistence.completed" {
+		t.Fatalf("message events = %v, want one persistence completion event", events)
+	}
+	event := events[0]
+	if !event.Time.Equal(finishedAt) {
+		t.Errorf("persistence event time = %v, want %v", event.Time, finishedAt)
+	}
+	attributes := attribute.NewSet(event.Attributes...)
+	assertMetricAttribute(t, attributes, "nostr.persistence.outcome", outcome)
 }
 
 func waitForEndedSpan(t *testing.T, recorder *tracetest.SpanRecorder, name string) trace.ReadOnlySpan {

@@ -184,20 +184,14 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 				switch env := envelope.(type) {
 				case *nostr.EventEnvelope:
-					// finishPersistence runs the persistence lifecycle hook exactly
-					// once for this EVENT, before broadcast and before the response.
-					// It returns the root context for the later work.
+					// Report the EVENT's persistence result before broadcast or response.
 					finishPersistence := func(persistence string) {
-						if rl.OnEventPersistence == nil {
-							return
-						}
-						ctx = withMessageObservation(
+						if rl.OnEventPersistence != nil {
 							rl.OnEventPersistence(ctx, PersistenceResult{
 								Outcome:    persistence,
 								FinishedAt: time.Now(),
-							}),
-							obs,
-						)
+							})
+						}
 					}
 
 					// check id

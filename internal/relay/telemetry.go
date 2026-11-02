@@ -222,9 +222,6 @@ type messageObservation struct {
 	eventClass  string
 
 	mu                 sync.Mutex
-	persistenceCtx     context.Context
-	persistenceSpan    trace.Span
-	persistenceStarted bool
 	persistenceDone    bool
 	persistenceOutcome string
 	messageDone        bool
@@ -259,76 +256,55 @@ func (t *relayTelemetry) messageObserver(ctx context.Context, envelope any, rece
 	rootCtx, span := t.tracer.Start(ctx, spanName, opts...)
 	observation := &messageObservation{
 		receivedAt:  receivedAt,
-		rootCtx:     rootCtx,
 		span:        span,
 		messageType: messageType,
 	}
 	rootCtx = context.WithValue(rootCtx, messageObservationKey{}, observation)
 	observation.rootCtx = rootCtx
 
-	processingCtx := rootCtx
 	if env, ok := envelope.(*nostr.EventEnvelope); ok && env != nil {
 		observation.eventClass = eventClass(&env.Event)
-		// the persistence span starts at the same receive instant as the
-		// message root so its duration covers validation, policy and storage
-		processingCtx, observation.persistenceSpan = t.tracer.Start(
-			rootCtx,
-			"nostr.event.persist",
-			trace.WithTimestamp(receivedAt),
-			trace.WithAttributes(eventAttributes(&env.Event)...),
-		)
-		observation.persistenceCtx = processingCtx
-		observation.persistenceStarted = true
 	}
 
-	return processingCtx, func(result engine.MessageResult) {
+	return rootCtx, func(result engine.MessageResult) {
 		observation.finishMessage(t, result)
 	}
 }
 
-// persistenceObserver ends the event persistence span at the moment the
-// storage pipeline completed and records the stored-only persistence latency.
-// It returns the message root context so broadcast and the response write are
-// not parented under the finished persistence span.
-func (t *relayTelemetry) persistenceObserver(ctx context.Context, result engine.PersistenceResult) context.Context {
+// persistenceObserver records the storage pipeline completion on the message
+// span and records latency only when an event was actually stored.
+func (t *relayTelemetry) persistenceObserver(ctx context.Context, result engine.PersistenceResult) {
 	observation, _ := ctx.Value(messageObservationKey{}).(*messageObservation)
 	if observation == nil {
-		return ctx
+		return
 	}
 	observation.finishPersistence(t, result)
-	return observation.rootCtx
 }
 
 func (o *messageObservation) finishPersistence(t *relayTelemetry, result engine.PersistenceResult) {
 	outcome := normalizePersistenceOutcome(result.Outcome)
 
 	o.mu.Lock()
-	if !o.persistenceStarted || o.persistenceDone {
-		o.mu.Unlock()
+	defer o.mu.Unlock()
+	if o.eventClass == "" || o.persistenceDone || o.messageDone {
 		return
 	}
 	o.persistenceDone = true
 	o.persistenceOutcome = outcome
-	span := o.persistenceSpan
-	spanCtx := o.persistenceCtx
-	o.mu.Unlock()
+	o.span.SetAttributes(attribute.String("nostr.persistence.outcome", outcome))
+	o.span.AddEvent("nostr.persistence.completed",
+		trace.WithTimestamp(result.FinishedAt),
+		trace.WithAttributes(attribute.String("nostr.persistence.outcome", outcome)),
+	)
 
-	span.SetAttributes(attribute.String("nostr.persistence.outcome", outcome))
-	if outcome == "error" {
-		span.SetStatus(codes.Error, "event persistence failed")
+	// Non-stored outcomes remain visible on the message span and metric,
+	// without contributing samples to the successful-persistence histogram.
+	if outcome == persistenceOutcomeStored {
+		t.eventPersistDuration.Record(o.rootCtx, result.FinishedAt.Sub(o.receivedAt).Seconds(), metric.WithAttributes(
+			attribute.String("nostr.event.class", o.eventClass),
+			attribute.String("nostr.persistence.outcome", persistenceOutcomeStored),
+		))
 	}
-	span.End(trace.WithTimestamp(result.FinishedAt))
-
-	// only rows that were actually inserted belong in the latency histogram;
-	// duplicates, stale replacements and rejected events stay visible in the
-	// persistence span and the message metric instead.
-	if outcome != persistenceOutcomeStored {
-		return
-	}
-	t.eventPersistDuration.Record(spanCtx, result.FinishedAt.Sub(o.receivedAt).Seconds(), metric.WithAttributes(
-		attribute.String("nostr.event.class", o.eventClass),
-		attribute.String("nostr.persistence.outcome", persistenceOutcomeStored),
-	))
 }
 
 func (o *messageObservation) finishMessage(t *relayTelemetry, result engine.MessageResult) {
@@ -340,30 +316,13 @@ func (o *messageObservation) finishMessage(t *relayTelemetry, result engine.Mess
 		return
 	}
 	o.messageDone = true
-	unfinishedPersistence := o.persistenceStarted && !o.persistenceDone
-	if unfinishedPersistence {
-		// defensive: the engine contract invokes the persistence hook exactly
-		// once per EVENT, but never leave a child span open if that is violated.
-		o.persistenceDone = true
-		o.persistenceOutcome = "error"
-	}
 	persistenceOutcome := o.persistenceOutcome
 	eventClass := o.eventClass
 	span := o.span
 	rootCtx := o.rootCtx
-	persistenceSpan := o.persistenceSpan
 	o.mu.Unlock()
 
-	if unfinishedPersistence {
-		persistenceSpan.SetAttributes(attribute.String("nostr.persistence.outcome", "error"))
-		persistenceSpan.SetStatus(codes.Error, "event persistence result was not reported")
-		persistenceSpan.End(trace.WithTimestamp(result.FinishedAt))
-	}
-
 	span.SetAttributes(attribute.String("nostr.outcome", outcome))
-	if persistenceOutcome != "" {
-		span.SetAttributes(attribute.String("nostr.persistence.outcome", persistenceOutcome))
-	}
 	if outcome != messageOutcomeOK {
 		span.SetStatus(codes.Error, outcome)
 	}

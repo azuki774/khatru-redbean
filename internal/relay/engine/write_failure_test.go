@@ -25,9 +25,8 @@ func TestSavedEventWithFailedACKIsNotReportedAsSuccessfulResponse(t *testing.T) 
 		relay.OnMessage = func(ctx context.Context, _ any, _ time.Time) (context.Context, func(MessageResult)) {
 			return ctx, func(result MessageResult) { results <- result }
 		}
-		relay.OnEventPersistence = func(ctx context.Context, result PersistenceResult) context.Context {
+		relay.OnEventPersistence = func(_ context.Context, result PersistenceResult) {
 			persistence <- result
-			return ctx
 		}
 	})
 	conn := dialTestRelay(t, ctx, server)
