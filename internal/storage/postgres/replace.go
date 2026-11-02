@@ -9,7 +9,7 @@ import (
 	"github.com/azuki774/khatru-redbean/internal/storage/internal"
 )
 
-func (b *PostgresBackend) ReplaceEvent(ctx context.Context, evt *nostr.Event) error {
+func (b *PostgresBackend) ReplaceEvent(ctx context.Context, evt *nostr.Event) (storage.WriteOutcome, error) {
 	b.Lock()
 	defer b.Unlock()
 
@@ -20,25 +20,28 @@ func (b *PostgresBackend) ReplaceEvent(ctx context.Context, evt *nostr.Event) er
 
 	ch, err := b.QueryEvents(ctx, filter)
 	if err != nil {
-		return fmt.Errorf("failed to query before replacing: %w", err)
+		return "", fmt.Errorf("failed to query before replacing: %w", err)
 	}
 
 	shouldStore := true
 	for previous := range ch {
 		if internal.IsOlder(previous, evt) {
 			if err := b.DeleteEvent(ctx, previous); err != nil {
-				return fmt.Errorf("failed to delete event for replacing: %w", err)
+				return "", fmt.Errorf("failed to delete event for replacing: %w", err)
 			}
 		} else {
 			shouldStore = false
 		}
 	}
 
-	if shouldStore {
-		if err := b.SaveEvent(ctx, evt); err != nil && err != storage.ErrDupEvent {
-			return fmt.Errorf("failed to save: %w", err)
-		}
+	if !shouldStore {
+		return storage.WriteSuperseded, nil
 	}
 
-	return nil
+	outcome, err := b.SaveEvent(ctx, evt)
+	if err != nil {
+		return "", fmt.Errorf("failed to save: %w", err)
+	}
+
+	return outcome, nil
 }

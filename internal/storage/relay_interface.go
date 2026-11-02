@@ -23,8 +23,8 @@ func (w RelayWrapper) Publish(ctx context.Context, evt nostr.Event) error {
 	defer cancel()
 
 	if nostr.IsRegularKind(evt.Kind) {
-		// regular events are just saved directly
-		if err := w.SaveEvent(ctx, &evt); err != nil && err != ErrDupEvent {
+		// regular events are just saved directly; an existing ID is a no-op
+		if _, err := w.SaveEvent(ctx, &evt); err != nil {
 			return fmt.Errorf("failed to save: %w", err)
 		}
 		return nil

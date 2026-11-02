@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/azuki774/khatru-redbean/internal/storage"
 	"github.com/azuki774/khatru-redbean/internal/storage/postgres"
 )
 
@@ -15,7 +14,8 @@ type databaseFailure struct {
 
 // isDatabaseFailure reports whether err means the application can no longer
 // access the database. Expected request errors, such as client cancellation,
-// duplicate events and invalid filters, are not database failures.
+// duplicate or superseded writes and invalid filters, are not database
+// failures.
 func isDatabaseFailure(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -24,9 +24,6 @@ func isDatabaseFailure(ctx context.Context, err error) bool {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	if errors.Is(err, storage.ErrDupEvent) {
 		return false
 	}
 

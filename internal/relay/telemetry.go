@@ -12,6 +12,7 @@ import (
 	"github.com/azuki774/khatru-redbean/internal/nostr"
 	"github.com/azuki774/khatru-redbean/internal/nostr/nip77"
 	"github.com/azuki774/khatru-redbean/internal/relay/engine"
+	"github.com/azuki774/khatru-redbean/internal/storage"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -21,11 +22,27 @@ import (
 
 const instrumentationName = "github.com/azuki774/khatru-redbean/relay"
 
+// eventLatencyBoundaries is shared by the server-side message duration and the
+// event persistence duration histograms so both can be aggregated with the
+// same bucket layout.
+var eventLatencyBoundaries = []float64{
+	0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+	0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+}
+
+const (
+	persistenceOutcomeStored = "stored"
+	messageOutcomeOK         = "ok"
+)
+
 type relayTelemetry struct {
 	tracer           trace.Tracer
 	databaseOps      metric.Int64Counter
 	databaseDuration metric.Float64Histogram
 	policyDecisions  metric.Int64Counter
+
+	messageDuration      metric.Float64Histogram
+	eventPersistDuration metric.Float64Histogram
 
 	connections         metric.Int64UpDownCounter
 	connectionCount     metric.Int64Counter
@@ -55,6 +72,22 @@ func newRelayTelemetry() (*relayTelemetry, error) {
 	if err != nil {
 		return nil, err
 	}
+	messageDuration, err := meter.Float64Histogram(
+		"nostr.relay.message.duration",
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(eventLatencyBoundaries...),
+	)
+	if err != nil {
+		return nil, err
+	}
+	eventPersistDuration, err := meter.Float64Histogram(
+		"nostr.relay.event.persist.duration",
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(eventLatencyBoundaries...),
+	)
+	if err != nil {
+		return nil, err
+	}
 	connections, err := meter.Int64UpDownCounter("nostr.relay.connections")
 	if err != nil {
 		return nil, err
@@ -77,14 +110,16 @@ func newRelayTelemetry() (*relayTelemetry, error) {
 	}
 
 	return &relayTelemetry{
-		tracer:              otel.Tracer(instrumentationName),
-		databaseOps:         databaseOps,
-		databaseDuration:    databaseDuration,
-		policyDecisions:     policyDecisions,
-		connections:         connections,
-		connectionCount:     connectionCount,
-		connectionDuration:  connectionDuration,
-		rejectedConnections: rejectedConnections,
+		tracer:               otel.Tracer(instrumentationName),
+		databaseOps:          databaseOps,
+		databaseDuration:     databaseDuration,
+		policyDecisions:      policyDecisions,
+		messageDuration:      messageDuration,
+		eventPersistDuration: eventPersistDuration,
+		connections:          connections,
+		connectionCount:      connectionCount,
+		connectionDuration:   connectionDuration,
+		rejectedConnections:  rejectedConnections,
 	}, nil
 }
 
@@ -93,6 +128,19 @@ func (t *relayTelemetry) eventOperation(operation string, next func(context.Cont
 		return t.database(ctx, operation, eventAttributes(event), func(ctx context.Context) error {
 			return next(ctx, event)
 		})
+	}
+}
+
+// writeOperation wraps storage functions that report whether a row was
+// actually written. The write outcome is carried on the database span, while a
+// duplicate or superseded event remains a successful operation: only a nonnil
+// error is treated as a failure.
+func (t *relayTelemetry) writeOperation(operation string, next func(context.Context, *nostr.Event) (storage.WriteOutcome, error)) func(context.Context, *nostr.Event) (storage.WriteOutcome, error) {
+	return func(ctx context.Context, event *nostr.Event) (storage.WriteOutcome, error) {
+		ctx, span, started := t.startDatabase(ctx, operation, eventAttributes(event))
+		outcome, err := next(ctx, event)
+		t.finishWriteDatabase(ctx, span, started, operation, outcome, err)
+		return outcome, err
 	}
 }
 
@@ -160,16 +208,41 @@ func (t *relayTelemetry) queryOperation(next func(context.Context, nostr.Filter)
 	}
 }
 
+// messageObservationKey carries the per-message lifecycle state between the
+// message observer, the persistence hook and the terminal callback. The state
+// is private to telemetry; engine code never sees it.
+type messageObservationKey struct{}
+
+type messageObservation struct {
+	receivedAt time.Time
+	rootCtx    context.Context
+	span       trace.Span
+
+	messageType string
+	eventClass  string
+
+	mu                 sync.Mutex
+	persistenceDone    bool
+	persistenceOutcome string
+	messageDone        bool
+}
+
 // messageObserver starts the root span for a single websocket message. The
 // message context is derived from the connection context (which is not tied to
 // the hijacked HTTP request) and links back to the handshake request span.
-func (t *relayTelemetry) messageObserver(ctx context.Context, envelope any) (context.Context, func(string)) {
+// receivedAt is captured by the engine right after the frame was read, so the
+// trace and the message histogram include parsing and scheduling time.
+func (t *relayTelemetry) messageObserver(ctx context.Context, envelope any, receivedAt time.Time) (context.Context, func(engine.MessageResult)) {
 	spanName := messageSpanName(envelope)
+	messageType := messageTypeLabel(spanName)
 	attributes := []attribute.KeyValue{
-		attribute.String("nostr.message.type", messageTypeLabel(spanName)),
+		attribute.String("nostr.message.type", messageType),
 	}
 	attributes = append(attributes, messageAttributes(envelope)...)
-	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindServer)}
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithTimestamp(receivedAt),
+	}
 	if ws := engine.GetConnection(ctx); ws != nil {
 		attributes = append(attributes, attribute.String("nostr.connection.id", ws.Challenge))
 		if ws.Request != nil {
@@ -180,18 +253,115 @@ func (t *relayTelemetry) messageObserver(ctx context.Context, envelope any) (con
 	}
 	opts = append(opts, trace.WithAttributes(attributes...))
 
-	ctx, span := t.tracer.Start(ctx, spanName, opts...)
-	var once sync.Once
-	done := func(outcome string) {
-		once.Do(func() {
-			if outcome != "" && outcome != "ok" {
-				span.SetAttributes(attribute.String("nostr.outcome", outcome))
-				span.SetStatus(codes.Error, outcome)
-			}
-			span.End()
-		})
+	rootCtx, span := t.tracer.Start(ctx, spanName, opts...)
+	observation := &messageObservation{
+		receivedAt:  receivedAt,
+		span:        span,
+		messageType: messageType,
 	}
-	return ctx, done
+	rootCtx = context.WithValue(rootCtx, messageObservationKey{}, observation)
+	observation.rootCtx = rootCtx
+
+	if env, ok := envelope.(*nostr.EventEnvelope); ok && env != nil {
+		observation.eventClass = eventClass(&env.Event)
+	}
+
+	return rootCtx, func(result engine.MessageResult) {
+		observation.finishMessage(t, result)
+	}
+}
+
+// persistenceObserver records the storage pipeline completion on the message
+// span and records latency only when an event was actually stored.
+func (t *relayTelemetry) persistenceObserver(ctx context.Context, result engine.PersistenceResult) {
+	observation, _ := ctx.Value(messageObservationKey{}).(*messageObservation)
+	if observation == nil {
+		return
+	}
+	observation.finishPersistence(t, result)
+}
+
+func (o *messageObservation) finishPersistence(t *relayTelemetry, result engine.PersistenceResult) {
+	outcome := normalizePersistenceOutcome(result.Outcome)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.eventClass == "" || o.persistenceDone || o.messageDone {
+		return
+	}
+	o.persistenceDone = true
+	o.persistenceOutcome = outcome
+	o.span.SetAttributes(attribute.String("nostr.persistence.outcome", outcome))
+	o.span.AddEvent("nostr.persistence.completed",
+		trace.WithTimestamp(result.FinishedAt),
+		trace.WithAttributes(attribute.String("nostr.persistence.outcome", outcome)),
+	)
+
+	// Non-stored outcomes remain visible on the message span and metric,
+	// without contributing samples to the successful-persistence histogram.
+	if outcome == persistenceOutcomeStored {
+		t.eventPersistDuration.Record(o.rootCtx, result.FinishedAt.Sub(o.receivedAt).Seconds(), metric.WithAttributes(
+			attribute.String("nostr.event.class", o.eventClass),
+			attribute.String("nostr.persistence.outcome", persistenceOutcomeStored),
+		))
+	}
+}
+
+func (o *messageObservation) finishMessage(t *relayTelemetry, result engine.MessageResult) {
+	outcome := normalizeMessageOutcome(result.Outcome)
+
+	o.mu.Lock()
+	if o.messageDone {
+		o.mu.Unlock()
+		return
+	}
+	o.messageDone = true
+	persistenceOutcome := o.persistenceOutcome
+	eventClass := o.eventClass
+	span := o.span
+	rootCtx := o.rootCtx
+	o.mu.Unlock()
+
+	span.SetAttributes(attribute.String("nostr.outcome", outcome))
+	if outcome != messageOutcomeOK {
+		span.SetStatus(codes.Error, outcome)
+	}
+	span.End(trace.WithTimestamp(result.FinishedAt))
+
+	metricAttributes := []attribute.KeyValue{
+		attribute.String("nostr.message.type", o.messageType),
+		attribute.String("nostr.outcome", outcome),
+	}
+	if eventClass != "" {
+		metricAttributes = append(metricAttributes, attribute.String("nostr.event.class", eventClass))
+	}
+	if persistenceOutcome != "" {
+		metricAttributes = append(metricAttributes, attribute.String("nostr.persistence.outcome", persistenceOutcome))
+	}
+	t.messageDuration.Record(rootCtx, result.FinishedAt.Sub(o.receivedAt).Seconds(), metric.WithAttributes(metricAttributes...))
+}
+
+// normalizeMessageOutcome restricts the metric and span outcome label to the
+// fixed vocabulary understood by dashboards; unknown values become error
+// rather than leaking arbitrary text or reasons.
+func normalizeMessageOutcome(outcome string) string {
+	switch outcome {
+	case "ok", "blocked", "error", "auth-required", "invalid", "mute", "unsupported", "write_error", "canceled":
+		return outcome
+	default:
+		return "error"
+	}
+}
+
+// normalizePersistenceOutcome applies the same finite-vocabulary rule to the
+// persistence result reported by the engine.
+func normalizePersistenceOutcome(outcome string) string {
+	switch outcome {
+	case "stored", "duplicate", "superseded", "not_stored", "not_attempted", "ephemeral", "error", "canceled":
+		return outcome
+	default:
+		return "error"
+	}
 }
 
 // messageSpanName returns the span-ready name for a parsed message envelope.
@@ -317,6 +487,22 @@ func (t *relayTelemetry) startDatabase(ctx context.Context, operation string, at
 }
 
 func (t *relayTelemetry) finishDatabase(ctx context.Context, span trace.Span, started time.Time, operation string, err error) {
+	t.finishDatabaseWithAttributes(ctx, span, started, operation, err, nil)
+}
+
+func (t *relayTelemetry) finishWriteDatabase(ctx context.Context, span trace.Span, started time.Time, operation string, outcome storage.WriteOutcome, err error) {
+	var extra []attribute.KeyValue
+	// a nonnil error means the write did not complete, so no write outcome is
+	// reported even if the store returned a stale value alongside the error.
+	if err == nil {
+		if value := normalizeWriteOutcome(outcome); value != "" {
+			extra = append(extra, attribute.String("nostr.persistence.outcome", value))
+		}
+	}
+	t.finishDatabaseWithAttributes(ctx, span, started, operation, err, extra)
+}
+
+func (t *relayTelemetry) finishDatabaseWithAttributes(ctx context.Context, span trace.Span, started time.Time, operation string, err error, extra []attribute.KeyValue) {
 	metricAttributes := []attribute.KeyValue{
 		attribute.String("db.system.name", "postgresql"),
 		attribute.String("db.operation.name", operation),
@@ -329,6 +515,9 @@ func (t *relayTelemetry) finishDatabase(ctx context.Context, span trace.Span, st
 		span.SetStatus(codes.Error, "database operation failed")
 		metricAttributes = append(metricAttributes, attribute.String("error.type", errorType))
 	}
+	if len(extra) > 0 {
+		span.SetAttributes(extra...)
+	}
 	span.End()
 
 	t.databaseOps.Add(ctx, 1, metric.WithAttributes(metricAttributes...))
@@ -336,6 +525,19 @@ func (t *relayTelemetry) finishDatabase(ctx context.Context, span trace.Span, st
 
 	if t.onDatabaseError != nil && isDatabaseFailure(ctx, err) {
 		t.onDatabaseError(operation, err)
+	}
+}
+
+// normalizeWriteOutcome keeps only the storage outcomes with defined semantics
+// on telemetry attributes; an unexpected non-empty value becomes error.
+func normalizeWriteOutcome(outcome storage.WriteOutcome) string {
+	switch outcome {
+	case storage.WriteStored, storage.WriteDuplicate, storage.WriteSuperseded, storage.WriteNotStored:
+		return string(outcome)
+	case "":
+		return ""
+	default:
+		return "error"
 	}
 }
 
@@ -432,6 +634,8 @@ func eventClass(event *nostr.Event) string {
 		return "ephemeral"
 	case nostr.IsRegularKind(event.Kind):
 		return "regular"
+	case nostr.IsAddressableKind(event.Kind):
+		return "addressable"
 	default:
 		return "replaceable"
 	}

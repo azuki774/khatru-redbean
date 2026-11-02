@@ -13,6 +13,7 @@ import (
 	"github.com/azuki774/khatru-redbean/internal/nostr"
 	"github.com/azuki774/khatru-redbean/internal/nostr/nip11"
 	"github.com/azuki774/khatru-redbean/internal/nostr/nip45/hyperloglog"
+	"github.com/azuki774/khatru-redbean/internal/storage"
 	"github.com/fasthttp/websocket"
 )
 
@@ -58,10 +59,9 @@ type Relay struct {
 	// hooks that will be called at various times
 	RejectEvent               []func(ctx context.Context, event *nostr.Event) (reject bool, msg string)
 	OverwriteDeletionOutcome  []func(ctx context.Context, target *nostr.Event, deletion *nostr.Event) (acceptDeletion bool, msg string)
-	StoreEvent                []func(ctx context.Context, event *nostr.Event) error
-	ReplaceEvent              []func(ctx context.Context, event *nostr.Event) error
+	StoreEvent                []func(ctx context.Context, event *nostr.Event) (storage.WriteOutcome, error)
+	ReplaceEvent              []func(ctx context.Context, event *nostr.Event) (storage.WriteOutcome, error)
 	DeleteEvent               []func(ctx context.Context, event *nostr.Event) error
-	OnEventSaved              []func(ctx context.Context, event *nostr.Event)
 	OnEphemeralEvent          []func(ctx context.Context, event *nostr.Event)
 	RejectFilter              []func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
 	RejectCountFilter         []func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
@@ -78,10 +78,16 @@ type Relay struct {
 
 	// OnMessage is invoked when a parsed websocket message is dispatched to its
 	// handler goroutine. envelope is the parsed message value (nil when parsing
-	// failed); implementations derive the span name and attributes from its type.
+	// failed) and receivedAt is when the raw message was read, before parsing.
+	// Implementations derive the span name and attributes from the envelope.
 	// It returns a context for message processing and a function that MUST be
-	// called exactly once when processing ends, with a short outcome label.
-	OnMessage func(ctx context.Context, envelope any) (context.Context, func(outcome string))
+	// called exactly once when processing ends, with the terminal result.
+	OnMessage func(ctx context.Context, envelope any, receivedAt time.Time) (context.Context, func(MessageResult))
+
+	// OnEventPersistence is invoked exactly once per EVENT message, after the
+	// storage pipeline finishes and before the event is broadcast or the
+	// response is written.
+	OnEventPersistence func(ctx context.Context, result PersistenceResult)
 
 	// these are used when this relays acts as a router
 	routes                []Route

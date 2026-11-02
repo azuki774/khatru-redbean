@@ -13,6 +13,7 @@ const (
 	subscriptionIdKey
 	nip86HeaderAuthKey
 	internalCallKey
+	messageObservationKey
 )
 
 func RequestAuth(ctx context.Context) {
@@ -22,7 +23,7 @@ func RequestAuth(ctx context.Context) {
 		ws.Authed = make(chan struct{})
 	}
 	ws.authLock.Unlock()
-	ws.WriteJSON(nostr.AuthEnvelope{Challenge: &ws.Challenge})
+	writeResponse(ctx, ws, nostr.AuthEnvelope{Challenge: &ws.Challenge})
 }
 
 func GetConnection(ctx context.Context) *WebSocket {
