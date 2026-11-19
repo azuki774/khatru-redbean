@@ -23,6 +23,7 @@ func Probe(ctx context.Context, relay string, now time.Time) (ProbeResult, error
 		return ProbeResult{}, err
 	}
 	defer c.CloseNow()
+	c.SetReadLimit(1 << 20) // 1MB: 2x the relay's 512000-byte message cap
 	now = now.Truncate(time.Second)
 	const id = "monitor"
 	request, _ := json.Marshal([]any{"REQ", id, map[string]any{"until": now.Unix(), "limit": 1}})
